@@ -34,8 +34,8 @@ class ParticipantRequest(BaseModel):
 
     ``passage_text`` is the connected-speech text for task 6, in the
     participant's own native language, reused identically every session.
-    Omitting it (null) keeps whatever is already stored; sending an empty
-    string clears it deliberately.
+    Omitting it (null) keeps whatever is already stored — re-registering a
+    participant can never wipe the passage they have been reading all week.
     """
 
     pseudonym: str
@@ -106,32 +106,17 @@ async def list_participants() -> list[dict[str, object]]:
 async def upsert_participant(body: ParticipantRequest) -> dict[str, object]:
     """Create a participant, or update their fixed passage."""
     pseudonym = require_pseudonym(body.pseudonym)
+    # None reaches the registry as "leave the passage alone"; anything sent is
+    # trimmed, because trailing whitespace in a read-aloud passage is noise.
+    passage = None if body.passage_text is None else body.passage_text.strip()
     with http_errors():
-        existing = participants.get_participant(pseudonym)
-        if body.passage_text is None:
-            # Not supplied: never silently erase a passage already in use.
-            passage = existing.passage_text if existing is not None else None
-        else:
-            stripped = body.passage_text.strip()
-            passage = stripped or None
-        participants.upsert_participant(
-            Participant(pseudonym=pseudonym, passage_text=passage)
-        )
-        stored = participants.get_participant(pseudonym)
-        if stored is None:
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    f"{pseudonym} was not saved. Check that {config.DATA_DIR} "
-                    "is writable before recording anything."
-                ),
-            )
-        log.info(
-            "Participant %s saved (passage %s)",
-            pseudonym,
-            "set" if stored.passage_text else "NOT set",
-        )
-        return _describe(stored)
+        stored = participants.upsert_participant(pseudonym, passage)
+    log.info(
+        "Participant %s saved (passage %s)",
+        pseudonym,
+        "set" if stored.passage_text else "NOT set",
+    )
+    return _describe(stored)
 
 
 @router.post("/{pid}/consent")
@@ -206,16 +191,19 @@ async def withdraw(pid: str, body: WithdrawRequest) -> dict[str, object]:
     with http_errors():
         # Deleting a whole participant tree is slow; keep the event loop free
         # so the UI (and the WebSocket) stay responsive while it runs.
-        await asyncio.to_thread(withdrawal.withdraw, pseudonym, entered.isoformat())
+        summary = await asyncio.to_thread(
+            withdrawal.withdraw, pseudonym, entered.isoformat()
+        )
     log.warning(
         "WITHDRAWAL: all data for %s deleted at operator UTC %s",
         pseudonym,
         entered.isoformat(),
     )
+    # The store's own summary is passed through in full: the operator gets a
+    # concrete count of what was erased, not a bare "done".
     return {
+        **summary,
         "ok": True,
-        "pseudonym": pseudonym,
-        "withdrawn_utc_operator_entered": entered.isoformat(),
         "message": (
             f"All audio and metadata for {pseudonym} have been deleted. The "
             "fact of the withdrawal is recorded; the recordings are gone."

@@ -50,6 +50,7 @@ def http_errors() -> Iterator[None]:
     """Translate domain exceptions into HTTP status codes.
 
     409 illegal transition  — the request does not fit the session state
+    409 already consented   — re-consent is deliberate, never a silent replace
     500 session-fatal       — recording cannot safely continue
     404 not found           — missing file, participant or session directory
     409 already exists      — refusing to overwrite an existing record
@@ -60,6 +61,8 @@ def http_errors() -> Iterator[None]:
     try:
         yield
     except IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except consent_store.ConsentAlreadyRecorded as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except SessionFatalError as exc:
         raise HTTPException(
@@ -81,38 +84,21 @@ def http_errors() -> Iterator[None]:
 
 
 # --- Pseudonym validation -------------------------------------------------
-#
-# A pseudonym becomes a directory name under data/. Anything that could
-# escape the data directory, or be unopenable on Windows, is rejected before
-# a single byte is written. (Conceptually config; kept as module-level
-# constants here because config.py is not this module's to edit.)
-
-_PSEUDONYM_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
-_WINDOWS_RESERVED: Final = frozenset(
-    {"con", "prn", "aux", "nul"}
-    | {f"com{i}" for i in range(1, 10)}
-    | {f"lpt{i}" for i in range(1, 10)}
-)
 
 
 def require_pseudonym(pseudonym: str) -> str:
-    """Return the cleaned pseudonym, or raise 400 with a readable reason."""
-    name = pseudonym.strip()
-    unusable = (
-        _PSEUDONYM_RE.match(name) is None
-        or name.endswith((" ", "."))
-        or name.lower() in _WINDOWS_RESERVED
-    )
-    if unusable:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"{pseudonym!r} is not a usable participant pseudonym. Use "
-                "letters, digits, spaces, dot, dash or underscore, starting "
-                "with a letter or digit, up to 64 characters."
-            ),
-        )
-    return name
+    """Validate a pseudonym that is about to become a directory name.
+
+    The rule itself lives in ``storage.participants`` — one definition, used
+    by the registry and by every route that turns a pseudonym into a path, so
+    the two can never drift apart. It deliberately does not normalise: a
+    stray space is reported to the operator rather than silently trimmed into
+    a second identity for the same person.
+    """
+    try:
+        return participants.validate_pseudonym(pseudonym)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # --- Request models -------------------------------------------------------

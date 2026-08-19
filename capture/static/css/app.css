@@ -284,6 +284,16 @@ main {
   font-weight: 700;
 }
 .demo:empty { display: none; }
+.passage:empty { display: none; }
+.passage {
+  max-width: 46rem;
+  text-align: left;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem 1.2rem;
+}
+.passage .passage-text { font-size: 1.25rem; margin: 0.3rem 0 0; white-space: pre-wrap; }
 .take-controls { display: grid; gap: 0.5rem; justify-items: center; width: 100%; }
 .elapsed { font-size: 2rem; font-variant-numeric: tabular-nums; margin: 0; font-weight: 700; }
 .take-result {

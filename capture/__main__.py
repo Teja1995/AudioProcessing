@@ -18,6 +18,7 @@ operator nothing, whereas a running UI shows them exactly what is wrong.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import logging.handlers
 import sys
@@ -49,6 +50,10 @@ LOG_BACKUP_COUNT: Final = 10
 LOG_FORMAT: Final = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 BROWSER_OPEN_DELAY_S: Final = 1.0
 RULE: Final = "=" * 72
+
+# uvicorn only speaks WebSocket if one of these is importable. Without them
+# /ws answers 404 and the level meter is dead (see check_websocket_support).
+WEBSOCKET_LIBRARIES: Final = ("websockets", "wsproto")
 
 
 def loud(title: str, lines: list[str]) -> None:
@@ -115,13 +120,20 @@ def report_devices() -> None:
         )
         return
 
-    log.info("--- input device report (drift anchor) ---")
-    for key, value in report.items():
-        log.info("device | %s = %r", key, value)
+    # startup_report() writes the full block to this same log; one summary
+    # line here keeps the two facts that matter easy to find afterwards.
     log.info(
-        "device | audio enhancements cannot be read automatically in v1 — "
-        "confirm the manual checklist in the UI before the first session"
+        "input device | %s | OS gain reading: %s",
+        report.get("input_device_name"),
+        report.get("os_gain_reading") or "UNREADABLE",
     )
+    if str(report.get("enhancement_status", "")) != "off":
+        log.warning(
+            "Audio enhancements are NOT confirmed off (status: %s). The "
+            "operator must work through the manual checklist in the UI before "
+            "the first session.",
+            report.get("enhancement_status"),
+        )
 
 
 def report_data_summary() -> None:
@@ -151,6 +163,47 @@ def report_data_summary() -> None:
             "check before recording anything else.",
             config.DATA_DIR,
         )
+    partials = counts.get("partials", 0)
+    if partials:
+        # A take only gets its final name once it is flushed and closed, so a
+        # surviving .partial is a take that died mid-write.
+        loud(
+            f"{partials} UNFINISHED RECORDING(S) FOUND",
+            [
+                f"There are {partials} leftover .partial file(s) under {config.DATA_DIR}.",
+                "A take died mid-write — the microphone was unplugged, or the",
+                "process was killed. Find which session it was and redo that take.",
+            ],
+        )
+
+
+def check_websocket_support() -> None:
+    """The live meter, task state and errors all ride the WebSocket.
+
+    With no WebSocket library installed, uvicorn answers /ws with 404 and the
+    operator gets a dead level meter and no explanation. Say so at startup
+    instead, while there is still time to fix it.
+    """
+    available = [
+        name
+        for name in WEBSOCKET_LIBRARIES
+        if importlib.util.find_spec(name) is not None
+    ]
+    if available:
+        log.info("websocket | %s available — live meter enabled", ", ".join(available))
+        return
+    loud(
+        "NO WEBSOCKET LIBRARY — THE LIVE LEVEL METER WILL NOT WORK",
+        [
+            "uvicorn cannot serve /ws without one of: "
+            + ", ".join(WEBSOCKET_LIBRARIES)
+            + ".",
+            "Recording still works, but the input level meter, the clipping",
+            "indicator and live error messages will not reach the browser.",
+            "Fix this BEFORE the mission, while there is still internet:",
+            "    pip install websockets",
+        ],
+    )
 
 
 def install_lifecycle_hooks(app: FastAPI) -> None:
@@ -231,6 +284,7 @@ def main() -> None:
 
     report_devices()
     report_data_summary()
+    check_websocket_support()
 
     url = f"http://{config.HOST}:{config.PORT}/"
     log.info("serving on %s — loopback only, nothing is exposed to a network", url)
