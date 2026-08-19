@@ -1155,15 +1155,15 @@ async function loadSpeakerPicker() {
       "button",
       {
         class: "btn btn-quiet btn-small",
+        id: "speaker-test-button",
         type: "button",
-        onclick: function () {
-          testSpeaker(effective);
-        },
+        onclick: testSpeaker,
       },
       "Play a test tone"
     )
   );
   block.append(actions);
+  block.append(h("p", { id: "speaker-test-status", class: "hint", hidden: true }));
 }
 
 async function selectSpeaker(index) {
@@ -1177,26 +1177,35 @@ async function selectSpeaker(index) {
   await loadSpeakerPicker();
 }
 
-// Plays the real reference tone asset, through the browser, so the operator
-// can confirm sound comes out of the thing in the room before a participant
-// is sitting there. The recorded tone still comes from the Python side.
-function testSpeaker(device) {
-  const block = el("speaker-picker");
-  if (!block) return;
-  const player = new Audio("/static/audio/reference_tone.wav");
-  const note = h("p", { class: "hint", text: "Playing the reference tone…" });
-  block.append(note);
-  player.play().then(
-    function () {
-      note.textContent =
-        "Playing. If you cannot hear it, the wrong output is selected" +
-        (device ? ` (currently ${device.name}).` : ".");
-    },
-    function (err) {
-      note.className = "error";
-      note.textContent = `Could not play the tone: ${err.message}`;
-    }
-  );
+// Play the reference tone through the SELECTED speaker.
+//
+// Done on the server, not with an <audio> element: the browser plays through
+// whatever output the OS gives it, which is the very device this screen
+// exists to override. A browser-side test could sound out of the
+// microphone's own headphone jack and still report success.
+async function testSpeaker() {
+  const note = el("speaker-test-status");
+  const button = el("speaker-test-button");
+  if (!note) return;
+  // One status line, reused. Appending a new one per click stacked identical
+  // messages down the page.
+  note.hidden = false;
+  note.className = "hint";
+  note.textContent = "Playing the reference tone…";
+  if (button) button.disabled = true;
+
+  try {
+    const result = await api("POST", "/api/devices/test-tone");
+    note.className = "ok-note";
+    note.textContent =
+      `Played through ${result.played_through}. If you heard nothing, that is ` +
+      "the wrong speaker — choose another above and test again.";
+  } catch (err) {
+    note.className = "error";
+    note.textContent = `Could not play the tone: ${err.message}`;
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function selectMic(index) {

@@ -8,12 +8,14 @@ physically, taped and photographed, and the software must never touch it
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from capture import config
 from capture.adherence import tracker
-from capture.audio import devices, selection
+from capture.audio import devices, playback, selection
 from capture.storage import paths
 from capture.errors import DeviceError
 from fastapi import HTTPException
@@ -244,3 +246,38 @@ async def select_output(body: SelectDeviceRequest) -> dict[str, object]:
 async def clear_output() -> dict[str, object]:
     selection.clear_output_selection()
     return {"selected": None}
+
+
+@router.post("/devices/test-tone")
+async def play_test_tone() -> dict[str, object]:
+    """Play the reference tone through the SELECTED speaker.
+
+    Deliberately server-side. A browser <audio> element plays through
+    whatever output the OS hands the browser, which is exactly the device
+    this screen exists to override — so a browser-side test would confirm
+    nothing about the selection and could sound out of the microphone's own
+    headphone jack while reporting success.
+
+    Refused mid-session: a tone during a take would be recorded into it.
+    """
+    if service.has_active:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A session is in progress. A test tone now would be recorded "
+                "into the take."
+            ),
+        )
+    index = selection.resolve_playback_device()
+    name = "the Windows default output"
+    if index is not None:
+        try:
+            import sounddevice as sd
+
+            name = str(sd.query_devices(index)["name"])
+        except Exception:  # noqa: BLE001 — only the label; playback still runs
+            name = f"device {index}"
+
+    with http_errors():
+        await asyncio.to_thread(playback.play_wav, config.REFERENCE_TONE_WAV)
+    return {"played_through": name, "device_index": index}
