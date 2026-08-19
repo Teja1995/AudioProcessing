@@ -19,9 +19,11 @@ clock: zero-padded counter + operator-entered UTC.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from itertools import count
 from pathlib import Path
+from typing import Final
 
 from capture import config
 from capture.domain.tasks import TaskSpec
@@ -90,3 +92,62 @@ def ensure_data_dirs() -> None:
     """Create data/ and data/consent/ if missing. Safe to run every startup."""
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     config.CONSENT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# --- Cloud-sync detection --------------------------------------------------
+
+# Folders these services keep synced to a company's servers. Voice recordings
+# of identifiable people are personal data, and voiceprints are special
+# category biometric data under GDPR; CLAUDE.md is explicit that no audio
+# leaves the laptop except by the operator's own USB copy. A data directory
+# inside one of these uploads every take automatically, before anyone decides
+# to share anything.
+_SYNC_ENV_VARS: Final = (
+    "OneDrive",
+    "OneDriveConsumer",
+    "OneDriveCommercial",
+    "Dropbox",
+    "iCloudDrive",
+)
+_SYNC_DIR_NAMES: Final = (
+    "onedrive",
+    "dropbox",
+    "google drive",
+    "googledrive",
+    "icloud drive",
+    "icloudrive",
+    "box sync",
+    "creative cloud files",
+    "pcloud",
+    "mega",
+    "yandex.disk",
+    "nextcloud",
+    "sync.com",
+)
+
+
+def cloud_sync_warning(directory: Path | None = None) -> str | None:
+    """Explain why this data directory is unsafe, or None if it is fine.
+
+    Checked at startup rather than assumed: the project folder can easily end
+    up on a synced Desktop without anyone choosing that.
+    """
+    target = (directory or config.DATA_DIR).resolve()
+    lowered = str(target).lower()
+
+    for variable in _SYNC_ENV_VARS:
+        root = os.environ.get(variable)
+        if root and lowered.startswith(str(Path(root).resolve()).lower()):
+            return (
+                f"The data directory is inside {variable} "
+                f"({root}). Recordings will be uploaded automatically."
+            )
+
+    for part in target.parts:
+        name = part.lower().strip()
+        if name in _SYNC_DIR_NAMES:
+            return (
+                f"The data directory is inside a {part} folder. Recordings "
+                "will be uploaded automatically."
+            )
+    return None

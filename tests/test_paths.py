@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timezone
 from pathlib import Path
 
 from capture.domain.tasks import BY_NUMBER
 from capture.storage.paths import (
+    cloud_sync_warning,
     next_free_path,
     partial_path,
     session_id,
@@ -77,6 +80,37 @@ class NeverOverwriteTests(unittest.TestCase):
             self.assertEqual(
                 next_free_path(target).name, "03_sustained_a_take1_dup2.wav"
             )
+
+
+
+
+class CloudSyncDetectionTests(unittest.TestCase):
+    """Recordings inside a synced folder are uploaded automatically, which
+    CLAUDE.md forbids and GDPR takes seriously. Detect it, loudly."""
+
+    def test_onedrive_path_is_flagged(self) -> None:
+        with mock.patch.dict(
+            os.environ, {"OneDrive": r"C:\Users\someone\OneDrive"}, clear=False
+        ):
+            warning = cloud_sync_warning(
+                Path(r"C:\Users\someone\OneDrive\Desktop\study\data")
+            )
+        self.assertIsNotNone(warning)
+        self.assertIn("OneDrive", warning)
+
+    def test_named_sync_folders_are_flagged_without_an_env_var(self) -> None:
+        for folder in ("Dropbox", "Google Drive", "iCloud Drive", "Nextcloud"):
+            warning = cloud_sync_warning(Path("C:/Users/x") / folder / "study" / "data")
+            self.assertIsNotNone(warning, folder)
+
+    def test_a_plain_local_path_is_not_flagged(self) -> None:
+        self.assertIsNone(cloud_sync_warning(Path(r"C:\space_ready_data")))
+        self.assertIsNone(cloud_sync_warning(Path(r"D:\mission\data")))
+
+    def test_a_folder_merely_mentioning_a_service_is_not_flagged(self) -> None:
+        # "my-dropbox-notes" is not a Dropbox sync root; only a whole path
+        # component counts, so this must not cry wolf.
+        self.assertIsNone(cloud_sync_warning(Path(r"C:\work\my-dropbox-notes\data")))
 
 
 if __name__ == "__main__":

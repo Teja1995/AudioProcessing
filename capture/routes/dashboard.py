@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from capture import config
 from capture.adherence import tracker
 from capture.audio import devices, selection
+from capture.storage import paths
 from capture.errors import DeviceError
 from fastapi import HTTPException
 from capture.routes.session import http_errors
@@ -51,6 +52,9 @@ async def summary() -> dict[str, object]:
         counts = tracker.startup_summary()
     result: dict[str, object] = dict(counts)
     result["data_dir"] = str(config.DATA_DIR)
+    # A data directory inside OneDrive/Dropbox/etc uploads every take
+    # automatically, which CLAUDE.md forbids and GDPR takes seriously.
+    result["cloud_sync_warning"] = paths.cloud_sync_warning()
     return result
 
 

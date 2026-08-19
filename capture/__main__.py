@@ -38,7 +38,7 @@ from capture.adherence import tracker
 from capture.app import create_app
 from capture.audio import devices
 from capture.session_service import service
-from capture.storage.paths import ensure_data_dirs
+from capture.storage.paths import cloud_sync_warning, ensure_data_dirs
 
 log = logging.getLogger("capture.startup")
 
@@ -281,6 +281,27 @@ def main() -> None:
         config.BLOCKSIZE_FRAMES,
     )
     log.info("paths | data=%s log=%s", config.DATA_DIR, log_path)
+
+    warning = cloud_sync_warning()
+    if warning is not None:
+        loud(
+            "RECORDINGS WILL LEAVE THIS LAPTOP",
+            [
+                warning,
+                "",
+                "Voice recordings of identifiable people are personal data,",
+                "and voiceprints are special category biometric data under",
+                "GDPR. CLAUDE.md requires that no audio leaves the laptop",
+                "except by your own USB copy.",
+                "",
+                "Move the data somewhere outside the sync folder:",
+                r"    set SPACE_READY_DATA_DIR=C:\space_ready_data",
+                "    python -m capture",
+                "",
+                "Then move any sessions already recorded, and remove them",
+                "from the cloud copy as well.",
+            ],
+        )
 
     report_devices()
     report_data_summary()

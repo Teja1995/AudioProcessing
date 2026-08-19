@@ -11,6 +11,7 @@ last so they do not fatigue the voice before the sensitive measures.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Final
 
@@ -43,7 +44,13 @@ PORT: Final = 8765  # arbitrary, no significance (ARCHITECTURE.md §16)
 
 PACKAGE_DIR: Final = Path(__file__).resolve().parent
 STATIC_DIR: Final = PACKAGE_DIR / "static"
-DATA_DIR: Final = PACKAGE_DIR.parent / "data"
+# Where recordings live. Overridable, because the default sits next to the
+# code and the code may sit inside a cloud-synced folder — see
+# capture.storage.paths.cloud_sync_warning(). Set SPACE_READY_DATA_DIR to a
+# path OUTSIDE any sync folder (an external drive, or C:\space_ready_data).
+DATA_DIR: Final = Path(
+    os.environ.get("SPACE_READY_DATA_DIR") or (PACKAGE_DIR.parent / "data")
+)
 CONSENT_DIR: Final = DATA_DIR / "consent"
 MASTER_LOG_PATH: Final = DATA_DIR / "master_log.csv"
 PARTICIPANTS_PATH: Final = DATA_DIR / "participants.json"  # pseudonyms + passages
