@@ -352,3 +352,160 @@ def resolve_capture_device() -> DeviceInfo:
         max_input_channels=device.max_input_channels,
         default_samplerate=device.default_samplerate,
     )
+
+
+# --- Grouping: one entry per real microphone -------------------------------
+#
+# PortAudio lists every device once per host API, so a single USB microphone
+# appears three or four times. Presenting that raw makes the operator choose
+# between paths they have no way to judge, and buries the two microphones
+# that physically exist among a dozen aliases and virtual endpoints.
+#
+# Best path first. WDM-KS talks to the hardware pin and was measured
+# delivering the Yeti's ADC samples bit-exact; WASAPI is clean at a matching
+# rate but converts through float; DirectSound and MME go through the
+# resampling mixer.
+HOST_API_PREFERENCE: Final[tuple[str, ...]] = (
+    "Windows WDM-KS",
+    "Windows WASAPI",
+    "Windows DirectSound",
+    "MME",
+)
+
+# MME truncates device names to 31 characters, so the same microphone reads
+# as "Microphone (Yeti Stereo Microph" there and "Microphone (Yeti Stereo
+# Microphone)" everywhere else. Comparing that prefix reunites them.
+_MME_NAME_LIMIT: Final = 31
+
+# Virtual endpoints that route to whatever Windows chooses. They are not
+# microphones, and recording through one means not knowing what was recorded.
+_VIRTUAL_NAME_HINTS: Final[tuple[str, ...]] = (
+    "sound mapper",
+    "primary sound capture",
+)
+
+# WDM-KS exposes render (speaker) pins as inputs too. They are loopback
+# monitors, not microphones: selecting one records silence, or the system's
+# own output.
+_OUTPUT_PIN_HINTS: Final[tuple[str, ...]] = ("wave speaker",)
+
+
+def _group_key(name: str) -> str:
+    return name.strip().lower()[:_MME_NAME_LIMIT]
+
+
+def _is_virtual(name: str) -> bool:
+    lowered = name.strip().lower()
+    if not lowered or lowered == "input ()":
+        return True
+    return any(hint in lowered for hint in _VIRTUAL_NAME_HINTS)
+
+
+def _is_output_pin(name: str) -> bool:
+    lowered = name.strip().lower()
+    return any(hint in lowered for hint in _OUTPUT_PIN_HINTS)
+
+
+@dataclass(frozen=True, slots=True)
+class MicrophoneGroup:
+    """One physical microphone, with every host-API path it offers."""
+
+    key: str
+    name: str  # the fullest spelling seen across the paths
+    paths: tuple[InputDevice, ...]  # best first
+    best: InputDevice
+    is_selected: bool
+    is_os_default: bool
+    # Not a microphone: a virtual router, or a speaker pin exposed as input.
+    is_virtual: bool
+    is_output_pin: bool
+
+    @property
+    def usable(self) -> bool:
+        return self.best.supports_capture
+
+    @property
+    def offer_by_default(self) -> bool:
+        """Shown without asking for the full list."""
+        return self.usable and not self.is_virtual and not self.is_output_pin
+
+
+def _rank(device: InputDevice) -> tuple[int, int, int]:
+    """Sort key: usable first, then best signal path, then most channels."""
+    try:
+        api_rank = HOST_API_PREFERENCE.index(device.host_api)
+    except ValueError:
+        api_rank = len(HOST_API_PREFERENCE)
+    return (0 if device.supports_capture else 1, api_rank, -device.max_input_channels)
+
+
+def group_microphones(devices: list[InputDevice]) -> list[MicrophoneGroup]:
+    """Collapse the host-API aliases into one entry per real microphone."""
+    buckets: dict[str, list[InputDevice]] = {}
+    for device in devices:
+        buckets.setdefault(_group_key(device.name), []).append(device)
+
+    groups: list[MicrophoneGroup] = []
+    for key, members in buckets.items():
+        ordered = tuple(sorted(members, key=_rank))
+        best = ordered[0]
+        # The fullest spelling: MME's truncation should never be the label.
+        name = max((d.name for d in ordered), key=len)
+        groups.append(
+            MicrophoneGroup(
+                key=key,
+                name=name,
+                paths=ordered,
+                best=best,
+                is_selected=any(d.is_selected for d in ordered),
+                is_os_default=any(d.is_os_default for d in ordered),
+                is_virtual=_is_virtual(name),
+                is_output_pin=_is_output_pin(name),
+            )
+        )
+
+    groups.sort(
+        key=lambda g: (
+            not g.offer_by_default,
+            not g.is_selected,
+            not g.best.recommended,
+            g.name.lower(),
+        )
+    )
+    return groups
+
+
+def groups_as_dicts(groups: list[MicrophoneGroup]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for group in groups:
+        out.append(
+            {
+                "key": group.key,
+                "name": group.name,
+                "index": group.best.index,
+                "host_api": group.best.host_api,
+                "default_samplerate": group.best.default_samplerate,
+                "supports_capture": group.best.supports_capture,
+                "recommended": group.best.recommended,
+                "warnings": list(group.best.warnings),
+                "is_selected": group.is_selected,
+                "is_os_default": group.is_os_default,
+                "is_virtual": group.is_virtual,
+                "is_output_pin": group.is_output_pin,
+                "offer_by_default": group.offer_by_default,
+                "path_count": len(group.paths),
+                "paths": [
+                    {
+                        "index": d.index,
+                        "host_api": d.host_api,
+                        "default_samplerate": d.default_samplerate,
+                        "supports_capture": d.supports_capture,
+                        "recommended": d.recommended,
+                        "is_selected": d.is_selected,
+                        "warnings": list(d.warnings),
+                    }
+                    for d in group.paths
+                ],
+            }
+        )
+    return out

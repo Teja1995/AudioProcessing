@@ -128,7 +128,11 @@ async def list_inputs() -> dict[str, object]:
         found = selection.list_input_devices()
     except DeviceError as exc:
         raise _device_http(exc) from exc
+    groups = selection.group_microphones(found)
     return {
+        # One entry per real microphone, host-API aliases collapsed. The UI
+        # shows these; `devices` stays for anything wanting the raw list.
+        "groups": selection.groups_as_dicts(groups),
         "devices": selection.as_dicts(found),
         "selected": selection.load_selection(),
         "required": {

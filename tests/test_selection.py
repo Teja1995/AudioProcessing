@@ -191,3 +191,66 @@ class ResolveTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GroupingTests(unittest.TestCase):
+    """PortAudio lists one entry per host API, so a single USB microphone
+    appears three or four times. The operator should see microphones."""
+
+    def test_same_microphone_across_host_apis_becomes_one_entry(self) -> None:
+        # Exactly what a Blue Yeti looks like on Windows, including MME's
+        # 31-character truncation of the name.
+        yeti = [
+            device(index=1, name="Microphone (Yeti Stereo Microph", host_api="MME", rate=44100.0),
+            device(index=7, name="Microphone (Yeti Stereo Microphone)", host_api="Windows DirectSound", rate=44100.0),
+            device(index=15, name="Microphone (Yeti Stereo Microphone)", host_api="Windows WASAPI"),
+            device(index=30, name="Microphone (Yeti Stereo Microphone)", host_api="Windows WDM-KS", rate=44100.0),
+        ]
+        groups = selection.group_microphones(yeti)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0].paths), 4)
+
+    def test_truncated_mme_name_is_never_the_label(self) -> None:
+        groups = selection.group_microphones([
+            device(index=1, name="Microphone (Yeti Stereo Microph", host_api="MME", rate=44100.0),
+            device(index=15, name="Microphone (Yeti Stereo Microphone)", host_api="Windows WASAPI"),
+        ])
+        self.assertEqual(groups[0].name, "Microphone (Yeti Stereo Microphone)")
+
+    def test_best_path_is_chosen_over_the_resampling_one(self) -> None:
+        groups = selection.group_microphones([
+            device(index=1, name="Mic", host_api="MME", rate=44100.0),
+            device(index=30, name="Mic", host_api="Windows WDM-KS", rate=44100.0),
+        ])
+        # WDM-KS reaches the hardware pin; MME goes through the mixer.
+        self.assertEqual(groups[0].best.host_api, "Windows WDM-KS")
+        self.assertEqual(groups[0].best.index, 30)
+
+    def test_speaker_pins_are_not_offered_as_microphones(self) -> None:
+        # WDM-KS exposes render pins as inputs; selecting one records the
+        # system's own output, or silence.
+        groups = selection.group_microphones([
+            device(index=25, name="Input (AudioMiniport Wave Speaker)", host_api="Windows WDM-KS")
+        ])
+        self.assertTrue(groups[0].is_output_pin)
+        self.assertFalse(groups[0].offer_by_default)
+
+    def test_virtual_routers_are_not_offered(self) -> None:
+        for name in ("Microsoft Sound Mapper - Input", "Primary Sound Capture Driver", "Input ()"):
+            groups = selection.group_microphones([device(index=0, name=name, host_api="MME", rate=44100.0)])
+            self.assertTrue(groups[0].is_virtual, name)
+            self.assertFalse(groups[0].offer_by_default, name)
+
+    def test_a_real_microphone_is_offered(self) -> None:
+        groups = selection.group_microphones([
+            device(index=15, name="Microphone (Yeti Stereo Microphone)", host_api="Windows WASAPI")
+        ])
+        self.assertTrue(groups[0].offer_by_default)
+        self.assertFalse(groups[0].is_virtual)
+        self.assertFalse(groups[0].is_output_pin)
+
+    def test_unusable_device_is_not_offered_but_is_not_called_virtual(self) -> None:
+        bluetooth = device(index=18, name="Headset (Hands-Free)", host_api="Windows WDM-KS", rate=8000.0, supports=False)
+        groups = selection.group_microphones([bluetooth])
+        self.assertFalse(groups[0].offer_by_default)
+        self.assertFalse(groups[0].is_virtual)

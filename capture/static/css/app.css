@@ -553,3 +553,23 @@ label.stacked textarea:focus-visible { outline: 3px solid var(--accent); outline
 /* Fine adjustment after the picker has got you close. */
 .nudge-row { gap: 0.4rem; margin: 0.5rem 0 0; flex-wrap: wrap; }
 .nudge-row .btn-small { min-width: 4.5rem; }
+
+
+/* Microphone picker: a select, because Windows lists the same microphone
+   once per host API and a tile grid turned three real devices into a
+   seventeen-tile wall. */
+.mic-select {
+  font: inherit;
+  color: var(--text);
+  background: #0b0e13;
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  min-height: 3.2rem;
+  width: 100%;
+  cursor: pointer;
+}
+.mic-select:hover { border-color: var(--accent); }
+.mic-select:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+.mic-select:disabled { opacity: 0.5; cursor: not-allowed; }
+.mic-select option:disabled { color: var(--muted); }

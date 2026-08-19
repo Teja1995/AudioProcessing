@@ -225,6 +225,7 @@ function isNotImplemented(err) {
 // ---------------------------------------------------------------------------
 
 const app = {
+  showAllMics: false, // reveal virtual / unusable inputs in the picker
   demos: null, // which spoken examples exist; filled by loadDemoAvailability()
   page: document.body.dataset.page || "capture",
   localStep: "start", // start | consent | setup | complete — only before/after a session
@@ -894,21 +895,16 @@ async function loadMicPicker() {
     return;
   }
 
-  const devices = asArray(data.devices);
+  const groups = asArray(data.groups);
   const required = data.required || {};
-  const selected = data.selected || null;
   const locked = data.session_active === true;
+  const offered = groups.filter(function (g) {
+    return g.offer_by_default === true;
+  });
+  const hidden = groups.length - offered.length;
+  const shown = app.showAllMics ? groups : offered;
 
   clear(block);
-  block.append(
-    h("p", {
-      class: "hint",
-      text:
-        `The study records ${required.sample_rate_hz || 48000} Hz ` +
-        `${required.channels === 1 ? "mono" : "multi-channel"}. ` +
-        "A microphone that cannot deliver that is not offered.",
-    })
-  );
 
   if (locked) {
     block.append(
@@ -921,83 +917,113 @@ async function loadMicPicker() {
     );
   }
 
-  if (!devices.length) {
-    block.append(h("p", { class: "error", text: "No input devices found at all. Is the microphone plugged in?" }));
-    block.append(h("button", { class: "btn btn-quiet", type: "button", onclick: loadMicPicker }, "Rescan"));
+  if (!shown.length) {
+    block.append(
+      h("p", {
+        class: "error",
+        text: "No microphone can record " + (required.sample_rate_hz || 48000) + " Hz mono. Is it plugged in?",
+      }),
+      h("button", { class: "btn btn-quiet", type: "button", onclick: loadMicPicker }, "Rescan")
+    );
     return;
   }
 
-  // Recommended devices first: same microphone, better path.
-  const ordered = devices.slice().sort((a, b) => {
-    if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
-    if (a.supports_capture !== b.supports_capture) return a.supports_capture ? -1 : 1;
-    return String(a.name).localeCompare(String(b.name));
+  // A select, not a grid of tiles: Windows lists the same microphone once per
+  // host API, so the raw list is mostly aliases of two or three real devices.
+  const select = h("select", { class: "mic-select", id: "mic-select", disabled: locked });
+  let selectedGroup = null;
+  for (const group of shown) {
+    const path =
+      group.recommended === true
+        ? "clean signal path"
+        : group.supports_capture
+        ? "usable, with warnings"
+        : "cannot record the study format";
+    const extra = [];
+    if (group.path_count > 1) extra.push(`${group.path_count} paths`);
+    if (group.is_os_default) extra.push("Windows default");
+    if (group.is_virtual) extra.push("not a real microphone");
+    if (group.is_output_pin) extra.push("speaker, not a microphone");
+
+    const option = h("option", {
+      value: String(group.index),
+      selected: group.is_selected === true,
+      disabled: !group.supports_capture,
+      text: `${group.name} — ${group.host_api} · ${path}${extra.length ? " · " + extra.join(" · ") : ""}`,
+    });
+    if (group.is_selected) selectedGroup = group;
+    select.append(option);
+  }
+  select.addEventListener("change", function () {
+    selectMic(Number(select.value));
   });
 
-  const list = h("div", { class: "picker" });
-  for (const device of ordered) {
-    const chosen =
-      selected && selected.name === device.name && selected.host_api === device.host_api;
-    const label = device.recommended
-      ? "recommended"
-      : device.supports_capture
-      ? "usable, with warnings"
-      : "cannot record the study format";
+  block.append(h("label", { class: "stacked" }, "Microphone", select));
 
-    const button = h(
-      "button",
-      {
-        class: "btn" + (chosen ? " btn-go" : ""),
-        type: "button",
-        disabled: locked || !device.supports_capture,
-        title: device.supports_capture ? "" : String(device.capture_error || ""),
-        onclick: () => selectMic(device.index),
-      },
-      h("span", { class: "name", text: device.name }),
-      h("span", {
-        class: "sub" + (device.recommended ? "" : " sub-warn"),
-        text:
-          `${device.host_api} · ${Math.round(device.default_samplerate)} Hz · ${label}` +
-          (chosen ? " · SELECTED" : "") +
-          (device.is_os_default ? " · Windows default" : ""),
-      })
-    );
-    list.append(button);
-  }
-  block.append(list);
-
-  // Warnings for whatever is actually selected, spelled out rather than
-  // hidden behind a tooltip.
-  const active = ordered.find(
-    (d) => selected && selected.name === d.name && selected.host_api === d.host_api
-  );
-  if (!selected) {
+  // What the current choice actually means, spelled out rather than left in
+  // a dropdown line the operator has already stopped reading.
+  if (!data.selected) {
     block.append(
       h("p", {
         class: "notice",
         text:
-          "No microphone chosen, so Windows' default is used — which is often " +
-          "a resampling path. Choose one above before the first session.",
+          "No microphone chosen, so Windows' default is used — often a path " +
+          "that resamples. Pick one above before the first session.",
       })
     );
-  } else if (active && asArray(active.warnings).length) {
-    for (const warning of active.warnings) {
+  } else if (selectedGroup && asArray(selectedGroup.warnings).length) {
+    for (const warning of selectedGroup.warnings) {
       block.append(h("p", { class: "notice", text: warning }));
     }
-  } else if (active) {
+  } else if (selectedGroup) {
     block.append(
-      h("p", { class: "ok-note", text: `Recording from ${active.name} via ${active.host_api}. Nothing in the path alters the signal.` })
+      h("p", {
+        class: "ok-note",
+        text: `Recording from ${selectedGroup.name} via ${selectedGroup.host_api} at ${Math.round(
+          selectedGroup.default_samplerate
+        )} Hz. Nothing in this path alters the signal.`,
+      })
     );
   }
 
   const actions = h("div", { class: "row-actions row-actions-left" });
-  actions.append(h("button", { class: "btn btn-quiet", type: "button", onclick: loadMicPicker }, "Rescan"));
-  if (selected && !locked) {
+  actions.append(h("button", { class: "btn btn-quiet btn-small", type: "button", onclick: loadMicPicker }, "Rescan"));
+  if (data.selected && !locked) {
     actions.append(
-      h("button", { class: "btn btn-quiet", type: "button", onclick: clearMicSelection }, "Use Windows default")
+      h("button", { class: "btn btn-quiet btn-small", type: "button", onclick: clearMicSelection }, "Use Windows default")
+    );
+  }
+  if (hidden > 0 || app.showAllMics) {
+    actions.append(
+      h(
+        "button",
+        {
+          class: "btn btn-quiet btn-small",
+          type: "button",
+          onclick: function () {
+            app.showAllMics = !app.showAllMics;
+            loadMicPicker();
+          },
+        },
+        app.showAllMics
+          ? "Hide virtual and unusable inputs"
+          : `Show ${hidden} hidden input${hidden === 1 ? "" : "s"}`
+      )
     );
   }
   block.append(actions);
+
+  if (hidden > 0 && !app.showAllMics) {
+    block.append(
+      h("p", {
+        class: "hint",
+        text:
+          `${hidden} entr${hidden === 1 ? "y is" : "ies are"} hidden: virtual ` +
+          "routers, speaker pins Windows exposes as inputs, and devices that " +
+          "cannot record the study's format.",
+      })
+    );
+  }
 }
 
 async function selectMic(index) {
