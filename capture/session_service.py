@@ -22,7 +22,7 @@ from typing import Any
 from capture import config
 from capture.audio import devices, playback, selection
 from capture.audio.engine import LevelUpdate, RecordingEngine
-from capture.audio.qc import check_take
+from capture.audio.qc import check_take, robust_noise_floor_dbfs
 from capture.domain import time as clock
 from capture.domain.models import (
     Covariates,
@@ -56,6 +56,10 @@ class ActiveSession:
     redo_counts: dict[SlotKey, int] = field(default_factory=dict)
     current_take_path: Path | None = None
     current_take_started_s: float | None = None
+    # Whole-take RMS of this session's room-silence take (task 1). Every
+    # later take's voicing check is judged against it, so the threshold
+    # follows the microphone, its gain and the room actually in use.
+    noise_floor_dbfs: float | None = None
     fatal: str | None = None  # set once a session-fatal error has occurred
 
 
@@ -391,6 +395,7 @@ class SessionService:
                 result.final_path,
                 slot.task,
                 self._rms_history(session.participant, slot.task.key),
+                session.noise_floor_dbfs,
             )
         except Exception as exc:  # noqa: BLE001 — re-reported below, never hidden
             # The take is ALREADY final on disk at this point. QC is a
@@ -419,6 +424,23 @@ class SessionService:
                         f"and logged. Listen to it before moving on."
                     ),
                 }
+            )
+
+        # Task 1 IS the noise-floor measurement, so its own result becomes
+        # the reference every later take in this session is judged against.
+        if slot.task.key == "silence" and qc is not None:
+            # A low percentile of short-term RMS, not the whole-take RMS: one
+            # cough during the silence take must not raise the bar for every
+            # later take in the session.
+            session.noise_floor_dbfs = await asyncio.to_thread(
+                robust_noise_floor_dbfs, result.final_path
+            )
+            log.info(
+                "Session %s room floor measured at %.1f dBFS; voicing "
+                "threshold for later takes is %.1f dBFS",
+                session.session_id,
+                session.noise_floor_dbfs,
+                session.noise_floor_dbfs + config.QC_VOICING_MARGIN_DB,
             )
 
         record = TakeRecord(

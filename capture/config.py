@@ -99,7 +99,24 @@ SAFETY_CAP_S: Final = 120.0
 QC_CLIP_LEVEL: Final = 0.999  # fraction of full scale counted as clipped
 QC_CLIP_CONSECUTIVE: Final = 4  # this many consecutive clipped samples => warn
 QC_RMS_BAND_DB: Final = 9.0  # warn if take RMS strays this far from the participant's running mean
+# Absolute fallback only, used until a session has recorded its room-silence
+# take. Measured against a Blue Yeti this sits barely 5 dB above the room
+# floor (~-55 dBFS RMS), which is too tight to separate genuine soft
+# phonation from noise — hence the relative rule below.
 QC_VOICING_FLOOR_DBFS: Final = -50.0  # whole-take RMS below this => "no voicing detected"
+
+# Preferred rule: voicing means "meaningfully above THIS session's measured
+# room floor". Task 1 exists precisely to characterise that floor, so every
+# later take is judged against the room and microphone actually in use,
+# instead of a constant that only suits one gain setting.
+QC_VOICING_MARGIN_DB: Final = 6.0
+
+# Gain staging targets for tools/check_levels.py. The gain is set ONCE on the
+# microphone, taped and photographed; this only tells the operator when it is
+# right. Peaks below the floor waste the ADC's range, above the ceiling risk
+# clipping the loudest task (maximum phonation time).
+TARGET_PEAK_DBFS_MIN: Final = -18.0
+TARGET_PEAK_DBFS_MAX: Final = -6.0
 QC_SHORT_FRACTION: Final = 0.6  # take shorter than this fraction of target => warn
 
 # --- master_log.csv schema — one row per completed task, appended immediately ---

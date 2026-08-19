@@ -364,11 +364,13 @@
     <ol class="fatal-steps">
       <li>Check the microphone cable and that the device is still connected.</li>
       <li>Check there is free space on the disk.</li>
-      <li>Restart the capture application, then start a new session for this
-        participant.</li>
+      <li>End this session with the button below, then start a new session
+        for this participant once the microphone is working again.</li>
     </ol>
     <p class="muted">Takes already saved are safe: a file only gets its final
-      name once it has been fully written.</p>
+      name once it has been fully written. Ending the session here keeps every
+      one of them and releases the microphone.</p>
+    <button id="fatal-end-session" class="btn" type="button">End this session and release the microphone</button>
     <button id="fatal-recheck" class="btn btn-quiet" type="button">Re-check the server</button>
     <p id="fatal-recheck-result" class="muted" hidden></p>
   </div>

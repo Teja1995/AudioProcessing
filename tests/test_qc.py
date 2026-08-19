@@ -19,7 +19,13 @@ import numpy as np
 import soundfile as sf
 
 from capture import config
-from capture.audio.qc import check_take, peak_dbfs, rms_dbfs
+from capture.audio.qc import (
+    check_take,
+    effective_bit_depth,
+    peak_dbfs,
+    robust_noise_floor_dbfs,
+    rms_dbfs,
+)
 from capture.domain.models import QCResult
 from capture.domain.tasks import BY_NUMBER, TaskSpec
 
@@ -283,3 +289,121 @@ class LevelHelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EffectiveBitDepthTests(unittest.TestCase):
+    """The Yeti's ADC is 16-bit, so a PCM_24 container overstates the real
+    resolution. QC measures and records what the samples actually carry."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _write(self, samples: np.ndarray) -> Path:
+        path = self.dir / "take.wav"
+        sf.write(path, samples, config.SAMPLE_RATE_HZ, subtype="PCM_24")
+        return path
+
+    def test_sixteen_bit_source_is_reported_as_sixteen(self) -> None:
+        rng = np.random.default_rng(1)
+        samples = (rng.integers(-(2**14), 2**14, 4800) << 16).astype(np.int32)
+        self.assertEqual(effective_bit_depth(self._write(samples)), 16)
+
+    def test_twenty_four_bit_source_is_reported_as_twenty_four(self) -> None:
+        rng = np.random.default_rng(2)
+        samples = (rng.integers(-(2**22), 2**22, 4800) << 8).astype(np.int32)
+        self.assertEqual(effective_bit_depth(self._write(samples)), 24)
+
+    def test_silent_file_has_no_measurable_depth(self) -> None:
+        self.assertIsNone(
+            effective_bit_depth(self._write(np.zeros(4800, dtype=np.int32)))
+        )
+
+    def test_depth_reaches_the_qc_result(self) -> None:
+        rng = np.random.default_rng(3)
+        samples = (rng.integers(-(2**13), 2**13, 48000) << 16).astype(np.int32)
+        result = check_take(self._write(samples), SUSTAINED_A_TASK, [])
+        self.assertEqual(result.effective_bits, 16)
+
+
+class RelativeVoicingTests(unittest.TestCase):
+    """Voicing is judged against the session's measured room floor, so the
+    threshold follows the microphone, its gain and the room in use."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _tone_at(self, dbfs_level: float, seconds: float = 6.0) -> Path:
+        n = int(seconds * config.SAMPLE_RATE_HZ)
+        t = np.arange(n) / config.SAMPLE_RATE_HZ
+        # rms of a sine is amplitude/sqrt(2); solve for the requested rms.
+        amplitude = (10 ** (dbfs_level / 20)) * np.sqrt(2)
+        path = self.dir / f"tone_{dbfs_level:.0f}.wav"
+        sf.write(path, (amplitude * np.sin(2 * np.pi * 220 * t)), config.SAMPLE_RATE_HZ, subtype="PCM_24")
+        return path
+
+    def test_quiet_take_counts_as_voiced_when_the_room_is_quieter(self) -> None:
+        # A soft /pa/ at -45 dBFS is genuine phonation in a -70 dBFS room,
+        # even though it sits below the absolute fallback of -50.
+        result = check_take(
+            self._tone_at(-45.0), SUSTAINED_A_TASK, [], noise_floor_dbfs=-70.0
+        )
+        self.assertTrue(result.voicing_detected)
+        self.assertEqual(result.noise_floor_dbfs, -70.0)
+
+    def test_same_level_is_not_voiced_in_a_noisy_room(self) -> None:
+        # The identical -45 dBFS take in a -44 dBFS room is just the room.
+        result = check_take(
+            self._tone_at(-45.0), SUSTAINED_A_TASK, [], noise_floor_dbfs=-44.0
+        )
+        self.assertFalse(result.voicing_detected)
+
+    def test_absolute_fallback_applies_before_the_floor_is_known(self) -> None:
+        loud = check_take(self._tone_at(-20.0), SUSTAINED_A_TASK, [])
+        self.assertTrue(loud.voicing_detected)
+        self.assertIsNone(loud.noise_floor_dbfs)
+
+
+class RobustNoiseFloorTests(unittest.TestCase):
+    """One transient during the 3 s silence take must not raise the voicing
+    bar for every later take in the session."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.rng = np.random.default_rng(11)
+
+    def _write(self, signal: np.ndarray, name: str) -> Path:
+        path = self.dir / name
+        sf.write(path, signal, config.SAMPLE_RATE_HZ, subtype="PCM_24")
+        return path
+
+    def _quiet_room(self, seconds: float = 3.0, level_dbfs: float = -60.0) -> np.ndarray:
+        n = int(seconds * config.SAMPLE_RATE_HZ)
+        return self.rng.normal(0, 10 ** (level_dbfs / 20), n)
+
+    def test_matches_plain_rms_when_the_room_really_is_quiet(self) -> None:
+        path = self._write(self._quiet_room(), "quiet.wav")
+        self.assertAlmostEqual(robust_noise_floor_dbfs(path), -60.0, delta=1.5)
+
+    def test_single_transient_does_not_inflate_the_floor(self) -> None:
+        room = self._quiet_room()
+        start = config.SAMPLE_RATE_HZ
+        burst = int(0.2 * config.SAMPLE_RATE_HZ)
+        room[start : start + burst] += self.rng.normal(0, 10 ** (-25 / 20), burst)
+        path = self._write(room, "cough.wav")
+
+        # The naive measure is dragged up by more than 20 dB; the robust one
+        # still describes the room between events.
+        naive = rms_dbfs(sf.read(path, dtype="float64")[0])
+        robust = robust_noise_floor_dbfs(path)
+        self.assertGreater(naive - robust, 15.0)
+        self.assertAlmostEqual(robust, -60.0, delta=2.0)
+
+    def test_empty_file_reports_silence_rather_than_failing(self) -> None:
+        path = self._write(np.zeros(0, dtype=np.float64), "empty.wav")
+        self.assertLess(robust_noise_floor_dbfs(path), -100.0)

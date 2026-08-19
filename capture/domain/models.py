@@ -82,6 +82,15 @@ class QCResult:
     voicing_detected: bool
     duration_ok: bool
     warnings: tuple[str, ...] = ()
+    # Real resolution of the samples, not the container's. A 16-bit ADC
+    # written to a PCM_24 file leaves the low byte zero, so the file says 24
+    # while the signal carries 16. Recorded per take so the analysis knows
+    # what it is actually working with, and so a mid-mission microphone or
+    # driver change is visible afterwards.
+    effective_bits: int | None = None
+    # Whole-take RMS of the session's room-silence take, when known: the
+    # reference the voicing check was actually made against.
+    noise_floor_dbfs: float | None = None
 
     @property
     def status(self) -> Literal["pass", "warn"]:

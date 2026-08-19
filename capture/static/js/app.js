@@ -366,7 +366,8 @@ async function onFatalRecheck() {
     if (out) {
       out.textContent =
         `The server still has session ${active.sessionId} open and marked failed: ${active.fatal}. ` +
-        "It will refuse every further take. Restart the capture application, then start a new session.";
+        "It will refuse every further take. End the session with the button above, " +
+        "then start a new session once the microphone is working.";
     }
     return;
   }
@@ -386,6 +387,53 @@ async function onFatalRecheck() {
   app.localStep = "start";
   app.startLoaded = false;
   render();
+}
+
+// Close out a session whose recording path failed. The takes it completed are
+// already final on disk and in both ledgers; this releases the microphone and
+// frees the server so the next session can start without restarting the app.
+// It cannot resume recording — the server refuses every take on a failed
+// session, so this is an exit, never a "carry on anyway".
+async function onFatalEndSession() {
+  const button = el("fatal-end-session");
+  const out = el("fatal-recheck-result");
+  if (!app.sessionId) {
+    if (out) {
+      out.hidden = false;
+      out.textContent = "There is no session open to end.";
+    }
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Ending…";
+  }
+  if (out) {
+    out.hidden = false;
+    out.textContent = "Ending the session…";
+  }
+  try {
+    const data = await api("POST", `/api/sessions/${encodeURIComponent(app.sessionId)}/complete`);
+    app.completeInfo = data && typeof data === "object" ? data : {};
+    app.fatal = null;
+    const overlay = el("fatal");
+    if (overlay) overlay.hidden = true;
+    forgetSession();
+    app.localStep = "complete";
+    app.startLoaded = false;
+    render();
+  } catch (err) {
+    if (out) {
+      out.textContent =
+        `The session was NOT ended: ${err.message}. Every completed take is still ` +
+        "safe on disk. Restart the capture application if this keeps failing.";
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "End this session and release the microphone";
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2340,6 +2388,9 @@ function wireCapture() {
 
   const recheck = el("fatal-recheck");
   if (recheck) recheck.addEventListener("click", onFatalRecheck);
+
+  const endFailed = el("fatal-end-session");
+  if (endFailed) endFailed.addEventListener("click", onFatalEndSession);
 
   window.addEventListener("beforeunload", function (event) {
     if (app.snapshot && app.snapshot.take_state === "recording") {

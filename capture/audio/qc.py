@@ -18,12 +18,16 @@ import math
 from pathlib import Path
 from typing import Sequence
 
+import logging
+
 import numpy as np
 import soundfile as sf
 
 from capture import config
 from capture.domain.models import QCResult
 from capture.domain.tasks import TaskSpec
+
+log = logging.getLogger("capture.qc")
 
 _SILENCE_DBFS = -120.0  # reported for an all-zero buffer instead of -inf
 
@@ -57,10 +61,63 @@ def _longest_true_run(flags: np.ndarray) -> int:
     return int(np.max(ends - starts))
 
 
+def effective_bit_depth(path: Path) -> int | None:
+    """How many bits of the samples actually carry signal.
+
+    A 16-bit ADC written into a PCM_24 file leaves the low 8 bits zero, so
+    the container says 24 while the real resolution is 16. Reading the file
+    as int32 and finding the fewest trailing zero bits across non-silent
+    samples recovers the truth. Returns None for an empty or silent file,
+    where there is nothing to measure.
+    """
+    raw, _ = sf.read(path, dtype="int32", always_2d=False)
+    # int64 so that negating the most negative int32 cannot overflow.
+    raw = np.asarray(raw, dtype=np.int64).reshape(-1)
+    nonzero = raw[raw != 0]
+    if nonzero.size == 0:
+        return None
+    # v & -v isolates the lowest set bit; the smallest such bit across the
+    # take is the quantisation step the hardware actually delivers.
+    lowest_set = np.bitwise_and(nonzero, -nonzero)
+    trailing = int(np.min(lowest_set)).bit_length() - 1
+    return 32 - trailing
+
+
+def robust_noise_floor_dbfs(path: Path, percentile: float = 10.0) -> float:
+    """The room's floor, measured so one transient cannot inflate it.
+
+    The whole-take RMS of the silence recording is the obvious measure and
+    the wrong one: a door, a cough or a habitat pump cycling during those
+    three seconds lifts it by tens of dB, and every later take in the session
+    would then be judged against a threshold that is far too high — quiet
+    but genuine phonation would be reported as "no voice recorded".
+
+    Measured on a real Yeti the whole-take RMS swung between -55 and -40 dBFS
+    across consecutive quiet recordings for exactly this reason. Taking a low
+    percentile of short-term RMS instead describes the floor between events
+    rather than the events, which is what "noise floor" is meant to mean.
+    """
+    samples, sample_rate = sf.read(path, dtype="float64", always_2d=False)
+    samples = np.asarray(samples).reshape(-1)
+    if samples.size == 0:
+        return _SILENCE_DBFS
+
+    window = max(1, int(0.05 * sample_rate))  # 50 ms
+    usable = samples[: (samples.size // window) * window]
+    if usable.size == 0:
+        return rms_dbfs(samples)
+
+    frames = usable.reshape(-1, window)
+    frame_rms = np.sqrt(np.mean(np.square(frames), axis=1))
+    quiet = float(np.percentile(frame_rms, percentile))
+    return 20.0 * math.log10(quiet) if quiet > 0.0 else _SILENCE_DBFS
+
+
 def check_take(
     path: Path,
     task: TaskSpec,
     participant_rms_history_dbfs: Sequence[float],
+    noise_floor_dbfs: float | None = None,
 ) -> QCResult:
     """All four checks on one finished take.
 
@@ -114,7 +171,16 @@ def check_take(
         baseline_dbfs = None
         rms_in_range = None
 
-    voicing_detected = take_rms > config.QC_VOICING_FLOOR_DBFS
+    # Voicing is judged against THIS session's measured room floor when it
+    # is known (task 1 exists to characterise it), because the right
+    # threshold depends on the microphone, its gain and the room. The
+    # absolute constant is only a fallback for the silence take itself and
+    # for sessions whose floor was never captured.
+    if noise_floor_dbfs is not None:
+        voicing_threshold = noise_floor_dbfs + config.QC_VOICING_MARGIN_DB
+    else:
+        voicing_threshold = config.QC_VOICING_FLOOR_DBFS
+    voicing_detected = take_rms > voicing_threshold
 
     if task.target_s is not None:
         minimum_s = task.target_s * config.QC_SHORT_FRACTION
@@ -182,6 +248,19 @@ def check_take(
             "the microphone and the mouth-to-mic distance, then redo."
         )
 
+    bits = effective_bit_depth(path)
+    if bits is not None and bits < 24:
+        # Not a warning the operator can act on mid-session — a 16-bit ADC
+        # cannot be made 24-bit — but it must reach the metadata so the
+        # analysis knows the real resolution and a mid-mission hardware
+        # change is visible afterwards.
+        log.info(
+            "%s: samples carry %d bits of real resolution inside a 24-bit "
+            "container (the microphone's ADC depth).",
+            path.name,
+            bits,
+        )
+
     return QCResult(
         clipped=clipped,
         rms_dbfs=take_rms,
@@ -190,4 +269,6 @@ def check_take(
         voicing_detected=voicing_detected,
         duration_ok=duration_ok,
         warnings=tuple(warnings),
+        effective_bits=bits,
+        noise_floor_dbfs=noise_floor_dbfs,
     )

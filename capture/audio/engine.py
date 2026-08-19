@@ -52,6 +52,11 @@ from capture import config
 from capture.errors import DeviceError, SessionFatalError, StorageWriteError
 from capture.storage.writer import TakeWriter
 
+# Host APIs that open the hardware pin directly, so a reported default
+# rate that differs from ours is not evidence of resampling. Defined in
+# capture.audio.selection; imported here to keep one definition.
+from capture.audio.selection import DIRECT_HOST_APIS
+
 log = logging.getLogger("capture.audio.engine")
 
 # --- Module-level constants (deliberately NOT in config.py: these are
@@ -201,30 +206,65 @@ class RecordingEngine:
         self._warn_if_os_will_resample()
 
     def _warn_if_os_will_resample(self) -> None:
-        """If Windows has the microphone configured at a different rate, the
-        OS mixer resamples on the way to us — which is processing applied to
-        the signal before we ever see it (CLAUDE.md, Hard audio
-        requirements). We cannot fix that from here; we can refuse to let it
-        pass unnoticed. Fix is in Windows Sound settings: set the device's
-        default format to 24 bit, 48000 Hz."""
+        """Warn when the OS will resample on the way to us.
+
+        Resampling is processing applied to the signal before we ever see it
+        (CLAUDE.md, Hard audio requirements). We cannot fix it from here; we
+        can refuse to let it pass unnoticed. The fix is in Windows Sound
+        settings: set the device's default format to 48000 Hz.
+
+        Whether a default-rate mismatch actually means resampling depends on
+        the host API, established by measurement rather than assumption:
+
+        * MME and DirectSound go through the Windows mixer and accept EVERY
+          rate offered (8 kHz to 192 kHz), resampling to reach them. Their
+          acceptance proves nothing, so a mismatch there is a real warning.
+        * WASAPI and WDM-KS open the hardware pin directly and reject a rate
+          the pin cannot do. A Blue Yeti reports a 44.1 kHz default under
+          WDM-KS yet captures at 48 kHz with its ADC's 16-bit sample pattern
+          perfectly intact — which resampling would have destroyed. So on
+          these APIs the reported default is not evidence of anything.
+
+        Warning on every session for a path that is provably clean would only
+        teach the operator to ignore warnings.
+        """
         try:
             info = sd.query_devices(self._device_index)
-        except (sd.PortAudioError, ValueError):
-            log.exception("Could not re-read device %d for the rate check", self._device_index)
+            host_api = str(sd.query_hostapis(int(info["hostapi"]))["name"])
+        except (sd.PortAudioError, ValueError, KeyError):
+            log.exception(
+                "Could not re-read device %d for the rate check", self._device_index
+            )
             return
+
         device_default = float(info["default_samplerate"])
-        if device_default != float(config.SAMPLE_RATE_HZ):
-            log.warning(
-                "Microphone %r is configured at %.0f Hz in the OS but we are "
-                "recording at %d Hz — the operating system is probably "
-                "resampling, which is processing applied before capture. Set "
-                "the device's default format to %d Hz in the OS sound "
-                "settings before the mission.",
+        if device_default == float(config.SAMPLE_RATE_HZ):
+            return
+        if host_api in DIRECT_HOST_APIS:
+            log.info(
+                "Microphone %r reports a %.0f Hz default under %s, but this "
+                "host API opens the hardware pin directly and accepted %d Hz, "
+                "so the capture is native and nothing is resampling.",
                 info["name"],
                 device_default,
-                config.SAMPLE_RATE_HZ,
+                host_api,
                 config.SAMPLE_RATE_HZ,
             )
+            return
+
+        log.warning(
+            "Microphone %r is configured at %.0f Hz in the OS and %s routes "
+            "through the Windows mixer, so the signal IS being resampled to "
+            "reach %d Hz — processing applied before capture. Either set the "
+            "device's default format to %d Hz in the OS sound settings, or "
+            "select the same microphone under WASAPI or WDM-KS on the start "
+            "screen.",
+            info["name"],
+            device_default,
+            host_api,
+            config.SAMPLE_RATE_HZ,
+            config.SAMPLE_RATE_HZ,
+        )
 
     def close(self) -> None:
         """Stop the stream and the writer thread. Any take still armed is

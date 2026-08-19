@@ -81,6 +81,32 @@ MANUAL_ENHANCEMENT_CHECKLIST: Final[tuple[str, ...]] = (
 )
 
 
+# A USB condenser microphone (the mission uses a Blue Yeti) has physical
+# controls that silently change what is recorded and that no software can
+# read back. They are as much a part of the fixed setup as the gain knob, so
+# the operator confirms them alongside the Windows enhancement steps.
+USB_MICROPHONE_CHECKLIST: Final[tuple[str, ...]] = (
+    "Polar pattern switch is set to CARDIOID and taped there. This matters: "
+    "the capture is MONO, and in stereo mode the two capsules carry "
+    "different signals, so mono would silently keep only one of them.",
+    "The gain knob is at its marked position, taped, and photographed. Run "
+    "'python -m tools.check_levels' once before the mission to set it, and "
+    "never move it again.",
+    "The MUTE button is not engaged (no blinking LED). A muted Yeti records "
+    "a perfectly valid, perfectly silent file.",
+    "The microphone is in the SAME USB port as every other session. Windows "
+    "renumbers audio devices per port, and a different port can present the "
+    "device with a different default format.",
+    "Windows Sound settings > this device > Advanced: default format is "
+    "48000 Hz. Prefer selecting the microphone under WASAPI or WDM-KS on the "
+    "start screen, which bypass the resampling mixer entirely.",
+    "Nothing is plugged into the microphone's own headphone jack unless it "
+    "is part of the fixed setup every session.",
+    "The microphone is at the recorded mouth-to-mic distance, addressed from "
+    "the FRONT (the side with the Blue logo), not the top.",
+)
+
+
 # --- Device query ----------------------------------------------------------
 
 
@@ -188,11 +214,12 @@ def startup_report() -> dict[str, object]:
         "os_gain_note": GAIN_UNREADABLE_NOTE if gain is None else "",
         "enhancement_status": str(status),
         "manual_checklist": list(MANUAL_ENHANCEMENT_CHECKLIST),
+        "microphone_checklist": list(USB_MICROPHONE_CHECKLIST),
     }
 
     log.info("Startup device report (gain / enhancement drift anchor):")
     for key, value in report.items():
-        if key == "manual_checklist":
+        if key in ("manual_checklist", "microphone_checklist"):
             continue
         log.info("    %s: %s", key, value)
 
@@ -204,6 +231,9 @@ def startup_report() -> dict[str, object]:
             "operator must confirm the manual checklist before recording."
         )
     for step in MANUAL_ENHANCEMENT_CHECKLIST:
+        log.info("    [ ] %s", step)
+    log.info("    --- microphone hardware ---")
+    for step in USB_MICROPHONE_CHECKLIST:
         log.info("    [ ] %s", step)
 
     if device.default_samplerate != float(config.SAMPLE_RATE_HZ):

@@ -42,11 +42,11 @@ log = logging.getLogger("capture.selection")
 # Host APIs that route through the Windows mixer. They accept a sample rate
 # the hardware endpoint is not set to and resample to reach it, without
 # reporting that they did.
-_MIXER_HOST_APIS: Final[frozenset[str]] = frozenset({"MME", "Windows DirectSound"})
+MIXER_HOST_APIS: Final[frozenset[str]] = frozenset({"MME", "Windows DirectSound"})
 
 # Host APIs that talk to the endpoint directly, so a rate mismatch surfaces
 # as an error rather than hiding behind a resampler.
-_DIRECT_HOST_APIS: Final[frozenset[str]] = frozenset(
+DIRECT_HOST_APIS: Final[frozenset[str]] = frozenset(
     {"Windows WASAPI", "Windows WDM-KS"}
 )
 
@@ -126,7 +126,7 @@ def _warnings_for(
         found.append(
             f"Cannot record at {config.SAMPLE_RATE_HZ} Hz mono. {capture_error}"
         )
-    if host_api in _MIXER_HOST_APIS:
+    if host_api in MIXER_HOST_APIS:
         found.append(
             f"{host_api} runs through the Windows mixer, which resamples and "
             "can apply enhancements without saying so. Use the same "
@@ -138,7 +138,7 @@ def _warnings_for(
                 f"while the study records at {config.SAMPLE_RATE_HZ} Hz, so "
                 "the mixer WILL resample — processing applied to the signal."
             )
-    elif host_api not in _DIRECT_HOST_APIS and not rate_matches:
+    elif host_api not in DIRECT_HOST_APIS and not rate_matches:
         # Unknown host API: no evidence either way, so stay conservative.
         found.append(
             f"Device default is {default_samplerate:.0f} Hz but the study "
