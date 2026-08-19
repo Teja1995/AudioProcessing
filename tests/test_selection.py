@@ -49,18 +49,33 @@ class WarningTests(unittest.TestCase):
         self.assertTrue(device().recommended)
         self.assertEqual(device().warnings, ())
 
-    def test_rate_mismatch_warns_about_resampling(self) -> None:
-        # The trap: Windows accepts 48 kHz on a 44.1 kHz endpoint and quietly
+    def test_mixer_api_rate_mismatch_warns_about_resampling(self) -> None:
+        # The trap: MME accepts 48 kHz on a 44.1 kHz endpoint and quietly
         # resamples, which is processing applied to the signal.
-        d = device(rate=44100.0, host_api="Windows WASAPI")
+        d = device(rate=44100.0, host_api="MME")
         self.assertFalse(d.recommended)
-        self.assertTrue(any("RESAMPLE" in w for w in d.warnings))
+        self.assertTrue(any("resample" in w for w in d.warnings))
 
-    def test_mixer_host_apis_are_warned_about(self) -> None:
+    def test_direct_api_rate_mismatch_is_not_treated_as_resampling(self) -> None:
+        # Measured on a Yeti: WDM-KS reports a 44.1 kHz default yet captures
+        # at 48 kHz with the ADC's 16-bit sample pattern perfectly intact,
+        # which resampling would have destroyed. Direct host APIs reject a
+        # rate the pin cannot do, so acceptance proves the rate is native and
+        # the reported default is irrelevant.
+        d = device(rate=44100.0, host_api="Windows WDM-KS", supports=True)
+        self.assertEqual(d.warnings, ())
+        self.assertTrue(d.recommended)
+
+    def test_mixer_host_apis_are_always_warned_about(self) -> None:
+        # Even at a matching rate, the mixer can apply enhancements silently.
         for host_api in ("MME", "Windows DirectSound"):
             d = device(host_api=host_api, rate=48000.0)
             self.assertFalse(d.recommended, host_api)
             self.assertTrue(any("mixer" in w for w in d.warnings), host_api)
+
+    def test_unknown_host_api_stays_conservative(self) -> None:
+        d = device(host_api="Some Future API", rate=44100.0)
+        self.assertFalse(d.recommended)
 
     def test_unsupported_device_is_not_recommended(self) -> None:
         d = device(rate=8000.0, supports=False)

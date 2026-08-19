@@ -39,7 +39,10 @@ def _resolve_destination(raw: str) -> Path:
     if not text:
         raise HTTPException(
             status_code=400,
-            detail="Enter the destination folder on the USB drive, e.g. E:\\space_ready_capture",
+            detail=(
+                "Enter the destination folder on the USB drive, "
+                "e.g. E:\\space_ready_capture"
+            ),
         )
     destination = Path(text).resolve()
     data_root = config.DATA_DIR.resolve()

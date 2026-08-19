@@ -72,8 +72,8 @@ class InputDevice:
 
     @property
     def recommended(self) -> bool:
-        """Safe to record the study on: right format, no silent resampling."""
-        return self.supports_capture and self.rate_is_native and not self.warnings
+        """Safe to record the study on: right format, nothing in the path."""
+        return self.supports_capture and not self.warnings
 
 
 def _host_api_name(hostapi_index: int) -> str:
@@ -104,25 +104,46 @@ def _warnings_for(
     capture_error: str | None,
     max_input_channels: int,
 ) -> tuple[str, ...]:
-    """Everything wrong with this device, in words the operator can act on."""
+    """Everything wrong with this device, in words the operator can act on.
+
+    Whether a rate mismatch matters depends on the host API, which was
+    established empirically against a Yeti on this machine:
+
+    * MME / DirectSound accept EVERY rate offered — 8 kHz through 192 kHz —
+      because the Windows mixer resamples to reach them. Their acceptance
+      means nothing, so they are always warned about.
+    * WDM-KS and WASAPI open the hardware pin directly. They reject a rate
+      the pin cannot do, so acceptance is proof the rate is native. The Yeti
+      reports a 44.1 kHz default under WDM-KS yet captures at 48 kHz with the
+      ADC's 16-bit sample pattern perfectly intact — which resampling would
+      have destroyed. A default-rate mismatch is therefore NOT evidence of
+      resampling on these APIs.
+    """
     found: list[str] = []
+    rate_matches = default_samplerate == float(config.SAMPLE_RATE_HZ)
 
     if not supports_capture:
         found.append(
             f"Cannot record at {config.SAMPLE_RATE_HZ} Hz mono. {capture_error}"
         )
-    if default_samplerate != float(config.SAMPLE_RATE_HZ):
-        found.append(
-            f"Windows has this device set to {default_samplerate:.0f} Hz, but "
-            f"the study records at {config.SAMPLE_RATE_HZ} Hz. Windows will "
-            "RESAMPLE, which is processing applied to the signal. Set the "
-            "device to 48000 Hz in Sound settings before recording."
-        )
     if host_api in _MIXER_HOST_APIS:
         found.append(
-            f"{host_api} runs through the Windows mixer, which can resample "
-            "and apply enhancements without saying so. Prefer the same "
+            f"{host_api} runs through the Windows mixer, which resamples and "
+            "can apply enhancements without saying so. Use the same "
             "microphone where it is listed under WASAPI or WDM-KS."
+        )
+        if not rate_matches:
+            found.append(
+                f"Windows has this device set to {default_samplerate:.0f} Hz "
+                f"while the study records at {config.SAMPLE_RATE_HZ} Hz, so "
+                "the mixer WILL resample — processing applied to the signal."
+            )
+    elif host_api not in _DIRECT_HOST_APIS and not rate_matches:
+        # Unknown host API: no evidence either way, so stay conservative.
+        found.append(
+            f"Device default is {default_samplerate:.0f} Hz but the study "
+            f"records at {config.SAMPLE_RATE_HZ} Hz, and whether "
+            f"{host_api} resamples is unknown. Prefer WASAPI or WDM-KS."
         )
     if max_input_channels < config.CHANNELS:
         found.append(

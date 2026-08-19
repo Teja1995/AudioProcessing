@@ -300,7 +300,6 @@ def main() -> None:
             log_config=None,  # keep our handlers: console + rotating file
         )
     except OSError as exc:
-        open_browser.cancel()
         loud(
             "COULD NOT START THE SERVER",
             [

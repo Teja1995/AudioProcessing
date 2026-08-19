@@ -27,6 +27,7 @@ let meterFloorDbfs = METER_FLOOR_DBFS_FALLBACK; // replaced if /api/devices repo
 const CLIP_HOLD_MS = 1200; // keep the live CLIPPING flag up this long after the last clipped frame
 const LEVEL_STALE_MS = 2500; // no level message for this long during a session -> say so, do not freeze a lie
 const WS_RETRY_MS = 1000;
+const WS_RETRY_SLOW_MS = 5000;
 const TICK_MS = 100;
 
 // Bumping this forces the operator to re-confirm the checklist.
@@ -227,6 +228,7 @@ const app = {
   page: document.body.dataset.page || "capture",
   localStep: "start", // start | consent | setup | complete — only before/after a session
   shownScreen: null,
+  booting: false, // true between a reload and the first answer from the server
   startLoaded: false,
   participants: [],
   consentPoints: [],
@@ -577,6 +579,10 @@ async function syncActive() {
 // ---------------------------------------------------------------------------
 
 function currentScreen() {
+  // A reload during a session: show nothing but "re-syncing" until the server
+  // has said where the session actually is. Flashing the start screen at an
+  // operator mid-session is how a good session gets abandoned.
+  if (app.booting) return "unknown";
   if (app.pendingBorg) return "borg";
   const snapshot = app.snapshot;
   if (app.sessionId && snapshot && snapshot.phase) {
@@ -756,9 +762,24 @@ async function loadDevices() {
   list.append(h("dt", { text: "Input device" }), h("dd", { text: name || "not reported" }));
   list.append(
     h("dt", { text: "OS gain reading" }),
-    h("dd", { text: gain === undefined || gain === null ? "unreadable" : String(gain) })
+    h("dd", {
+      text:
+        gain === undefined || gain === null
+          ? `unreadable${info.os_gain_note ? ` — ${info.os_gain_note}` : ""}`
+          : String(gain),
+    })
   );
   list.append(h("dt", { text: "Audio enhancements" }), h("dd", { text: status }));
+  if (info.capture_sample_rate_hz !== undefined) {
+    list.append(
+      h("dt", { text: "Capture format" }),
+      h("dd", {
+        text: `${info.capture_sample_rate_hz} Hz · ${info.capture_subtype || ""} · ${
+          info.capture_channels === 1 ? "mono" : `${info.capture_channels} ch`
+        }`,
+      })
+    );
+  }
   block.append(list);
   block.append(
     h("details", {}, h("summary", { text: "Full device report (logged with the session)" }), jsonBlock(info))
@@ -770,7 +791,26 @@ async function loadDevices() {
     })
   );
 
-  renderChecklist(name, status);
+  // The OS silently resampling the input is processing applied before capture,
+  // which the study cannot have. Both numbers are already in this report.
+  const deviceRate = Number(info.device_default_samplerate_hz);
+  const captureRate = Number(info.capture_sample_rate_hz);
+  if (Number.isFinite(deviceRate) && Number.isFinite(captureRate) && deviceRate !== captureRate) {
+    block.append(
+      h("p", {
+        class: "notice",
+        text:
+          `The OS has this device set to ${deviceRate} Hz but capture runs at ${captureRate} Hz. ` +
+          "Windows will resample, which is processing applied before capture. Set the device's " +
+          "default format to " + captureRate + " Hz in the sound settings before recording.",
+      })
+    );
+  }
+
+  // The wording comes from the server when it supplies it, so there is one
+  // copy of the checklist and it cannot drift out of step with the run log.
+  const supplied = asArray(info.manual_checklist).filter((each) => typeof each === "string");
+  renderChecklist(name, status, supplied.length ? supplied : ENHANCEMENT_CHECKLIST);
 }
 
 function firstString(candidates) {
@@ -809,9 +849,10 @@ function writeChecklistDone(deviceName, done) {
   }
 }
 
-function renderChecklist(deviceName, status) {
+function renderChecklist(deviceName, status, items) {
   const block = el("checklist-block");
   if (!block) return;
+  const steps = asArray(items).length ? items : ENHANCEMENT_CHECKLIST;
   clear(block);
 
   if (status === "off") {
@@ -844,7 +885,7 @@ function renderChecklist(deviceName, status) {
           type: "button",
           onclick: function () {
             writeChecklistDone(deviceName, false);
-            renderChecklist(deviceName, status);
+            renderChecklist(deviceName, status, steps);
           },
         },
         "Check it again"
@@ -865,17 +906,17 @@ function renderChecklist(deviceName, status) {
   const list = h("ul", { class: "checklist" });
   const boxes = [];
   const confirm = h("button", { class: "btn btn-go", type: "button", disabled: true }, "All confirmed");
-  for (let i = 0; i < ENHANCEMENT_CHECKLIST.length; i += 1) {
+  for (let i = 0; i < steps.length; i += 1) {
     const box = h("input", { type: "checkbox", id: `chk-${i}` });
     box.addEventListener("change", function () {
       confirm.disabled = !boxes.every((each) => each.checked);
     });
     boxes.push(box);
-    list.append(h("li", {}, box, h("label", { for: `chk-${i}`, text: ENHANCEMENT_CHECKLIST[i] })));
+    list.append(h("li", {}, box, h("label", { for: `chk-${i}`, text: steps[i] })));
   }
   confirm.addEventListener("click", function () {
     writeChecklistDone(deviceName, true);
-    renderChecklist(deviceName, status);
+    renderChecklist(deviceName, status, steps);
   });
   block.append(list, h("div", { class: "row-actions" }, confirm));
   renderPicker();
@@ -1393,6 +1434,13 @@ function renderTask() {
     setText("task-progress", "");
     setText("task-title", "Waiting for the server");
     setText("task-instruction", "No task is currently open. Re-sync to find out where the session is.");
+    setText("task-shape", "");
+    const stale = el("task-stem");
+    if (stale) stale.hidden = true;
+    clear(el("task-passage"));
+    clear(el("task-demo"));
+    const idleTimer = el("take-elapsed");
+    if (idleTimer) idleTimer.hidden = true;
     button.disabled = true;
     button.textContent = "—";
     return;
@@ -1429,8 +1477,18 @@ function renderTask() {
   const autoStop = task.stop === "auto";
   button.classList.toggle("recording", recording);
   if (recording) {
-    button.textContent = autoStop ? "Recording — it stops by itself" : "Stop recording";
-    button.disabled = autoStop || app.takeCallInFlight;
+    // An auto-stop take is stopped by the server, and the start request stays
+    // open for its whole length — so the button is disabled while that request
+    // is in flight. If it is NOT in flight and the take is still recording,
+    // something went wrong: the operator gets a way out rather than a screen
+    // with no working control.
+    const serverIsStopping = autoStop && app.takeCallInFlight;
+    button.textContent = serverIsStopping
+      ? "Recording — it stops by itself"
+      : autoStop
+        ? "Stop recording (this one normally stops by itself)"
+        : "Stop recording";
+    button.disabled = app.takeCallInFlight;
   } else if (snapshot.take_state === "armed") {
     button.textContent = "Arming…";
     button.disabled = true;
@@ -1580,13 +1638,17 @@ async function onTakeButton() {
   const task = snapshot && snapshot.task;
   if (!task || !app.sessionId || app.takeCallInFlight) return;
   const base = `/api/sessions/${encodeURIComponent(app.sessionId)}/tasks/${task.number}/takes/${task.take}`;
+  // The stem rides along so the server can refuse a stale screen: task 8
+  // records /s/ and /z/ under the same task and take number, and the path
+  // alone cannot tell them apart.
+  const query = `?stem=${encodeURIComponent(task.stem || "")}`;
   if (snapshot.take_state === "recording") {
-    await runTakeCall(`${base}/stop`, "stop");
+    await runTakeCall(`${base}/stop${query}`, "stop");
   } else {
     app.clipLatched = false;
     app.lastResult = null;
     updateClipIndicators();
-    await runTakeCall(`${base}/start`, "start");
+    await runTakeCall(`${base}/start${query}`, "start");
   }
 }
 
@@ -1628,7 +1690,15 @@ function handleTakeResponse(data) {
   } else if (data.status === "recording") {
     app.takeStartedAt = Date.now();
   }
-  if (!app.wsOpen) syncActive();
+  // Every take route returns the state machine's own snapshot alongside its
+  // result, so the screen is correct even if the push has not arrived (or the
+  // live connection is down).
+  if (data.state && typeof data.state === "object") {
+    const snapshot = normalizeSnapshot(data.state);
+    if (snapshot && snapshot.phase) setSnapshot(snapshot);
+  } else if (!app.wsOpen) {
+    syncActive();
+  }
 }
 
 function tick() {
@@ -1862,6 +1932,13 @@ function renderComplete() {
 }
 
 function renderUnknown() {
+  setText("unknown-title", app.booting ? "Re-syncing with the server" : "Unexpected session state");
+  setText(
+    "unknown-lead",
+    app.booting
+      ? "This page was reloaded. Reading the true state of the session from the server — the server holds it, not this page."
+      : "The server reports a phase this screen does not know how to draw. Nothing has been lost — completed takes are on disk."
+  );
   const node = el("unknown-detail");
   if (node) {
     let text;
@@ -1914,18 +1991,28 @@ function applyServerError(msg) {
   showFatal(code, message);
 }
 
+// Retry quickly at first (a dropped socket should come back at once), then
+// slow down so a server with no WebSocket support is not hammered all mission.
+let wsAttempts = 0;
+
+function wsRetryDelay() {
+  wsAttempts += 1;
+  return wsAttempts <= 5 ? WS_RETRY_MS : WS_RETRY_SLOW_MS;
+}
+
 function connectWs() {
   let ws;
   try {
     ws = new WebSocket(`ws://${location.host}/ws`);
   } catch (err) {
     setBanner("ws", "bad", `Cannot open the live connection: ${err.message}. Retrying…`);
-    window.setTimeout(connectWs, WS_RETRY_MS);
+    window.setTimeout(connectWs, wsRetryDelay());
     return;
   }
 
   ws.onopen = function () {
     app.wsOpen = true;
+    wsAttempts = 0;
     clearBanner("ws");
     syncActive();
   };
@@ -1951,7 +2038,7 @@ function connectWs() {
         ? "Live connection lost WHILE RECORDING. Do not assume this take is being captured — check the result when it stops."
         : "Live connection to the capture server lost. Retrying… the level meter is not live."
     );
-    window.setTimeout(connectWs, WS_RETRY_MS);
+    window.setTimeout(connectWs, wsRetryDelay());
   };
   ws.onerror = function () {
     // onclose always follows; the banner is set there.
@@ -2110,6 +2197,11 @@ async function runExport() {
       h("p", { class: "error", text: `The export failed: ${err.message}` }),
       h("p", { class: "muted", text: "Nothing on this laptop has been changed. Do not delete anything." })
     );
+    // A failed verification comes back as an error status WITH the full report
+    // attached — show every mismatch, not just the headline.
+    if (err instanceof ApiError && err.payload && typeof err.payload === "object") {
+      renderExportResult(out, err.payload);
+    }
   } finally {
     button.disabled = false;
     button.textContent = "Copy and verify";
@@ -2125,25 +2217,40 @@ function renderExportResult(out, data) {
   const status = String(result.status || "").toLowerCase();
   const good = verified && !mismatches.length && status !== "error" && status !== "mismatch" && status !== "failed";
 
+  const counts = [];
+  for (const key of [
+    "destination",
+    "files_copied",
+    "bytes_copied",
+    "source_file_count",
+    "destination_file_count",
+  ]) {
+    if (result[key] !== undefined) counts.push(`${key.replace(/_/g, " ")}: ${result[key]}`);
+  }
+
   if (good) {
-    const counts = [];
-    for (const key of ["files", "files_copied", "copied", "file_count", "bytes", "total_bytes"]) {
-      if (result[key] !== undefined) counts.push(`${key.replace(/_/g, " ")}: ${result[key]}`);
-    }
     out.append(
-      h("p", { class: "ok-note", text: "Copy verified: every file is present on the destination with the same byte size." }),
-      counts.length ? h("p", { class: "export-line muted", text: counts.join(" · ") }) : null
+      h("p", {
+        class: "ok-note",
+        text:
+          typeof result.detail === "string" && result.detail
+            ? result.detail
+            : "Copy verified: every file is on the destination with the same byte size.",
+      })
     );
   } else {
     out.append(
       h("p", {
         class: "error",
         text:
-          "VERIFICATION FAILED. The copy on the USB drive does NOT match this laptop. " +
-          "Do not delete anything here. Fix the destination and run it again.",
+          typeof result.detail === "string" && result.detail
+            ? result.detail
+            : "VERIFICATION FAILED. The copy on the USB drive does NOT match this laptop. " +
+              "Do not delete anything here. Fix the destination and run it again.",
       })
     );
     if (mismatches.length) {
+      out.append(h("p", { class: "muted", text: `${mismatches.length} mismatch(es):` }));
       const list = h("ul");
       for (const mismatch of mismatches) {
         list.append(h("li", { text: typeof mismatch === "string" ? mismatch : JSON.stringify(mismatch) }));
@@ -2151,6 +2258,7 @@ function renderExportResult(out, data) {
       out.append(list);
     }
   }
+  if (counts.length) out.append(h("p", { class: "export-line muted", text: counts.join(" · ") }));
   out.append(h("details", {}, h("summary", { text: "Full server reply" }), jsonBlock(result)));
 }
 
@@ -2242,10 +2350,16 @@ function wireCapture() {
 
   const remembered = recallSession();
   if (remembered.participant) app.participant = remembered.participant;
-  if (remembered.sessionId) app.sessionId = remembered.sessionId;
+  if (remembered.sessionId) {
+    app.sessionId = remembered.sessionId;
+    app.booting = true;
+  }
 
   render();
-  syncActive();
+  syncActive().finally(function () {
+    app.booting = false;
+    render();
+  });
   connectWs();
   window.setInterval(tick, TICK_MS);
 }

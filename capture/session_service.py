@@ -79,14 +79,23 @@ class SessionService:
     def has_active(self) -> bool:
         return self._active is not None
 
-    def require_session(self, session_id: str) -> ActiveSession:
+    def require_session(
+        self, session_id: str, allow_fatal: bool = False
+    ) -> ActiveSession:
+        """The active session, refusing anything that would record into a
+        session whose recording path has already failed.
+
+        ``allow_fatal`` is for the two read-only/close-out operations that a
+        failed session must still permit — reviewing what was captured, and
+        closing it out. Everything that could arm a take leaves it False.
+        """
         session = self.active
         if session.session_id != session_id:
             raise IllegalTransition(
                 f"Session {session_id} is not the active session "
                 f"({session.session_id})"
             )
-        if session.fatal is not None:
+        if session.fatal is not None and not allow_fatal:
             raise SessionFatalError("session_fatal", session.fatal)
         return session
 
@@ -201,7 +210,21 @@ class SessionService:
         self._active = session
 
         metadata.write_meta(meta)
-        engine.open_session_stream()  # meter runs before the first take
+        try:
+            engine.open_session_stream()  # meter runs before the first take
+        except Exception:
+            # The session never became recordable, so it must not stay parked
+            # on the service: leaving it there makes every retry fail with
+            # "a session is still active" until the app is restarted, which is
+            # the last thing the operator needs while a microphone is loose.
+            # Re-raised unchanged — the caller still sees the real device error.
+            self._active = None
+            log.exception(
+                "Session %s could not open the input stream; the session was "
+                "not started and the operator can retry",
+                sid,
+            )
+            raise
         log.info(
             "Session %s started for %s on device %r",
             sid,
@@ -230,15 +253,44 @@ class SessionService:
         self._push_state()
 
     def complete_session(self, session_id: str) -> dict[str, Any]:
-        session = self.require_session(session_id)
-        session.state.require(Phase.QC_REVIEW)
-        session.state.transition(Phase.COMPLETE)
+        """Close the session out: final meta.json, release the device, idle.
+
+        A session whose recording path failed can still be closed. Every take
+        it completed is already final on disk and in both ledgers, and
+        refusing to close it strands the operator — and the next participant —
+        until the application is restarted. What a failed session must never
+        do is record MORE takes, and it still cannot: every take endpoint goes
+        through require_session() with allow_fatal=False, and the engine
+        refuses to arm once it has signalled fatal.
+        """
+        session = self.require_session(session_id, allow_fatal=True)
+        ended_after_failure = session.fatal is not None
+        if not ended_after_failure:
+            # The normal path is unchanged: QC review is the only phase a
+            # healthy session may be completed from.
+            session.state.require(Phase.QC_REVIEW)
+            session.state.transition(Phase.COMPLETE)
         metadata.write_meta(session.meta)
         session.engine.close()
         self._active = None
-        log.info("Session %s complete: %d takes", session_id, len(session.meta.takes))
+        if ended_after_failure:
+            log.error(
+                "Session %s closed out AFTER a fatal recording error (%s): "
+                "%d take(s) completed and saved before the failure",
+                session_id,
+                session.fatal,
+                len(session.meta.takes),
+            )
+        else:
+            log.info(
+                "Session %s complete: %d takes", session_id, len(session.meta.takes)
+            )
         self._broadcast({"type": "task_state", "phase": Phase.COMPLETE.value})
-        return {"session_id": session_id, "takes": len(session.meta.takes)}
+        return {
+            "session_id": session_id,
+            "takes": len(session.meta.takes),
+            "ended_after_failure": ended_after_failure,
+        }
 
     def abandon_active_session(self) -> None:
         """Shutdown path: release the device. Completed takes are already
@@ -333,12 +385,41 @@ class SessionService:
         key: SlotKey = (slot.task.number, slot.stem, slot.take_n)
         redo_n = session.redo_counts.get(key, 0)
 
-        qc = await asyncio.to_thread(
-            check_take,
-            result.final_path,
-            slot.task,
-            self._rms_history(session.participant, slot.task.key),
-        )
+        try:
+            qc = await asyncio.to_thread(
+                check_take,
+                result.final_path,
+                slot.task,
+                self._rms_history(session.participant, slot.task.key),
+            )
+        except Exception as exc:  # noqa: BLE001 — re-reported below, never hidden
+            # The take is ALREADY final on disk at this point. QC is a
+            # convenience check; the ledgers are the record. If QC cannot run
+            # (a transient read error, a virus scanner still holding the file)
+            # the take must still be written into meta.json and master_log.csv
+            # and the battery must still advance — otherwise a good recording
+            # becomes an orphan file no ledger knows about, and the session
+            # jams at "cannot arm while take is recording".
+            # Nothing is swallowed: full traceback to the log, and a visible
+            # error pushed to the operator.
+            log.exception(
+                "Quality check failed for %s — the take IS saved; it is "
+                "recorded with no QC result and must be checked by hand",
+                result.final_path.name,
+            )
+            qc = None
+            self._broadcast(
+                {
+                    "type": "error",
+                    "code": "qc_failed",
+                    "message": (
+                        f"{result.final_path.name} was recorded and saved, but "
+                        f"the automatic quality check could not run "
+                        f"({type(exc).__name__}: {exc}). The take is on disk "
+                        f"and logged. Listen to it before moving on."
+                    ),
+                }
+            )
 
         record = TakeRecord(
             filename=result.final_path.name,
@@ -432,7 +513,9 @@ class SessionService:
         return history
 
     def qc_summary(self, session_id: str) -> dict[str, Any]:
-        session = self.require_session(session_id)
+        # Read-only, and the one screen that tells the operator what actually
+        # made it to disk — it must keep working after a fatal error.
+        session = self.require_session(session_id, allow_fatal=True)
         rows = [
             {
                 "task_number": record.task_number,
@@ -443,8 +526,15 @@ class SessionService:
                 "file": record.filename,
                 "duration_s": round(record.duration_s, 2),
                 "kept": record.kept,
-                "status": record.qc.status if record.qc else "pass",
-                "warnings": list(record.qc.warnings) if record.qc else [],
+                "status": record.qc.status if record.qc else "warn",
+                "warnings": (
+                    list(record.qc.warnings)
+                    if record.qc
+                    else [
+                        "QC DID NOT RUN for this take. It is saved on disk. "
+                        "Listen to it and redo it if anything is wrong."
+                    ]
+                ),
             }
             for record in session.meta.takes
         ]
@@ -473,8 +563,14 @@ class SessionService:
             "device_clock": record.device_clock_iso,
             "monotonic_offset_s": round(record.monotonic_offset_s, 3),
             "duration_s": round(record.duration_s, 3),
-            "qc_status": record.qc.status if record.qc else "pass",
-            "note": "; ".join(record.qc.warnings) if record.qc else "",
+            # qc is None only when the check could not run. Never report
+            # that as "pass" — an unchecked take is not a checked one.
+            "qc_status": record.qc.status if record.qc else "qc_failed",
+            "note": (
+                "; ".join(record.qc.warnings)
+                if record.qc
+                else "QC did not run for this take - check it by hand"
+            ),
         }
 
 

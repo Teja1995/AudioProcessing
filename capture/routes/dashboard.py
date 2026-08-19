@@ -64,7 +64,12 @@ async def device_report() -> dict[str, object]:
     """
     with http_errors():
         report = devices.startup_report()
-    return dict(report)
+    result = dict(report)
+    # The level meter's scale must come from config, not a copy in the JS:
+    # app.js falls back to a hardcoded -60 when this key is absent, which
+    # would silently drift from config.METER_FLOOR_DBFS.
+    result["meter_floor_dbfs"] = config.METER_FLOOR_DBFS
+    return result
 
 
 class SelectDeviceRequest(BaseModel):

@@ -1,4 +1,5 @@
-# The five permitted third-party dependencies (CLAUDE.md, Conventions).
+# The five permitted third-party dependencies (CLAUDE.md, Conventions),
+# plus websockets, which uvicorn needs to serve /ws at all (justified below).
 # pydantic arrives transitively with fastapi.
 #
 # BEFORE TRAVEL: install on the actual habitat laptop, run the full
@@ -11,3 +12,9 @@ soundfile>=0.12.1
 numpy>=1.26
 fastapi>=0.110
 uvicorn>=0.29
+
+# uvicorn only speaks WebSocket if one of these is importable (see
+# capture/__main__.py check_websocket_support). Without it /ws answers 404 and
+# the live level meter, clipping indicator and error pushes are all dead --
+# and there is no internet in the habitat to install it later.
+websockets>=12.0

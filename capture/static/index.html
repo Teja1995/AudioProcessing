@@ -323,10 +323,11 @@
 
   <!-- ==================== FALLBACK ==================== -->
   <section id="screen-unknown" class="screen" hidden>
-    <h2>Unexpected session state</h2>
+    <h2 id="unknown-title">Unexpected session state</h2>
     <div class="card">
-      <p class="lead">The server reports a phase this screen does not know how
-        to draw. Nothing has been lost — completed takes are on disk.</p>
+      <p id="unknown-lead" class="lead">The server reports a phase this screen
+        does not know how to draw. Nothing has been lost — completed takes are
+        on disk.</p>
       <pre id="unknown-detail" class="pre"></pre>
       <div class="row-actions">
         <button id="unknown-resync" class="btn btn-go" type="button">Re-sync with the server</button>
