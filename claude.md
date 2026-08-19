@@ -39,6 +39,16 @@ These are non-negotiable. Violating any one of them invalidates the dataset.
   perturbation and cepstral measures this study depends on.
 - **48 kHz, 24-bit, mono, uncompressed PCM WAV.** Never MP3, never Opus, never
   float32 output files.
+  - **Measured caveat (2026-08-20).** The mission microphone is a Blue Yeti,
+    whose ADC is **16-bit**. Recording through WDM-KS, 100% of samples are
+    exact multiples of 2^16, which cannot happen by chance across 96,000
+    samples. Files are still written as PCM_24 with the low byte zero, so
+    nothing the hardware captured is lost, but the dataset's real resolution
+    is 16-bit and no software setting changes that. Every take records its
+    measured `effective_bits` in `meta.json`, so the analysis works from the
+    truth rather than from the container. **Open question for the study
+    team:** accept 16-bit (most published voice-perturbation work uses it),
+    or source a 24-bit interface.
 - **No processing of any kind** on the captured signal. No normalisation, no
   filtering, no trimming, no gain applied in software. Write exactly what the
   ADC produced.
@@ -49,6 +59,19 @@ These are non-negotiable. Violating any one of them invalidates the dataset.
   flags enabled that can be read (Windows "Audio Enhancements", macOS ambient
   noise reduction). If they cannot be read, display a checklist the operator
   confirms manually.
+- **Choose the host API, not just the device.** Measured on this hardware:
+  MME and DirectSound accept EVERY sample rate offered (8 kHz to 192 kHz)
+  because the Windows mixer resamples to reach them, so their acceptance
+  proves nothing and their default is a trap. WASAPI and WDM-KS open the
+  hardware pin directly and reject a rate it cannot do, so acceptance there
+  is proof the rate is native. The Yeti reports a 44.1 kHz default under
+  WDM-KS yet captures at 48 kHz with the ADC's 16-bit pattern perfectly
+  intact — which resampling would have destroyed. The app therefore groups
+  devices by physical microphone and picks the direct path.
+- **Choose the speaker too.** Plugging in a USB microphone makes Windows
+  adopt ITS headphone jack as the default output. Task 2's calibration tone
+  then plays into headphones nobody is wearing while the take records room
+  silence, and still looks like a completed calibration.
 
 ## Architecture
 
@@ -101,7 +124,14 @@ For each task the UI must:
   tonal model for vowel tasks** — it would anchor the participant's pitch, and
   fundamental frequency is one of the measures.
 - Show a live input level meter with a clear clipping indicator.
-- Allow the operator to redo any individual take without restarting the session.
+- Allow the operator to redo any individual take without restarting the
+  session — including **on the task screen itself**, straight after the take,
+  with playback so the operator or participant can hear it first. Waiting for
+  the end-of-session list is too late in practice: the participant may have
+  moved or left, and a retake made then is not comparable with the original.
+- **Every screen must have an exit.** A screen with no way out is itself a
+  way to lose a session. Aborting keeps every completed take and releases the
+  microphone.
 - Record a Borg CR-10 perceived-effort rating after the phonation tasks.
 
 ## Metadata captured per session
@@ -120,7 +150,14 @@ since last session.
 **Covariates** (checklist, per session): minutes since last exercise, breathing
 route (nasal/oral), caffeine since last session, alcohol, estimated speaking
 load since last session, hours slept, upper-respiratory symptoms, medication,
-menstrual cycle phase where applicable, habitat temperature, habitat humidity.
+habitat temperature, habitat humidity.
+
+> **Removed 2026-08-20: menstrual cycle phase.** Dropped at the researcher's
+> request. It is health data under GDPR and, in a crew of 8–10, potentially
+> identifying. Note the cost: fluid retention genuinely varies across the
+> cycle, so this removes a covariate a hydration study might otherwise want
+> to control for. Reinstating it means re-adding the field to
+> `domain/models.py`, `routes/session.py` and the covariates form.
 
 Every field must be recordable as "not available" rather than blocking the
 session. A missing covariate is a small loss; a refused session is a large one.
@@ -160,7 +197,12 @@ device clock — use a zero-padded incrementing counter plus the entered UTC.
 After each session, without doing real analysis, flag obvious failures:
 - Any take that clipped.
 - Any take whose RMS is far outside that participant's running range.
-- Any take where no voicing was detected (empty or silent recording).
+- Any take where no voicing was detected. Judged against **this session's own
+  measured room floor** (task 1 exists to characterise it), not a fixed
+  threshold: the right level depends on the microphone, its gain and the
+  room. The floor is a low percentile of short-term RMS, not the whole-take
+  mean — a single cough during the silence take inflated the mean by 23 dB in
+  testing, which would have reported every later take as silent.
 - Any take much shorter than expected for its task.
 
 Show these as a simple pass/warn list so the operator can redo takes on the spot.
@@ -186,6 +228,12 @@ the EU.
 - A withdrawal function that deletes all of a participant's audio and metadata
   and records that the withdrawal happened.
 - No audio leaves the laptop except via the operator's explicit USB copy.
+- **The data directory must not sit inside a cloud-synced folder.** The
+  default lives beside the code, and on the development machine that was
+  under `OneDrive\Desktop`, so every take was uploaded automatically. The app
+  now detects OneDrive, Dropbox, Google Drive, iCloud and similar and warns
+  loudly at startup and on screen; set `SPACE_READY_DATA_DIR` to a path
+  outside any sync root.
 
 ## Non-goals
 
