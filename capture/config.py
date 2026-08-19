@@ -47,6 +47,9 @@ DATA_DIR: Final = PACKAGE_DIR.parent / "data"
 CONSENT_DIR: Final = DATA_DIR / "consent"
 MASTER_LOG_PATH: Final = DATA_DIR / "master_log.csv"
 PARTICIPANTS_PATH: Final = DATA_DIR / "participants.json"  # pseudonyms + passages
+# Which microphone the operator chose. Stored by name + host API, never by
+# index: PortAudio renumbers devices whenever anything is plugged in.
+SELECTED_DEVICE_PATH: Final = DATA_DIR / "selected_input_device.json"
 WITHDRAWAL_LOG_PATH: Final = DATA_DIR / "withdrawals.csv"  # tombstones, §11
 PARTIAL_SUFFIX: Final = ".partial"  # in-progress takes; renamed on clean completion
 REFERENCE_TONE_WAV: Final = STATIC_DIR / "audio" / "reference_tone.wav"

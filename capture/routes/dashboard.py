@@ -9,11 +9,15 @@ physically, taped and photographed, and the software must never touch it
 from __future__ import annotations
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from capture import config
 from capture.adherence import tracker
-from capture.audio import devices
+from capture.audio import devices, selection
+from capture.errors import DeviceError
+from fastapi import HTTPException
 from capture.routes.session import http_errors
+from capture.session_service import service
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
@@ -61,3 +65,98 @@ async def device_report() -> dict[str, object]:
     with http_errors():
         report = devices.startup_report()
     return dict(report)
+
+
+class SelectDeviceRequest(BaseModel):
+    """Which input device to record from, by its current PortAudio index.
+
+    The index is only a handle for this request: the server stores the
+    device's name and host API instead, because PortAudio renumbers devices
+    whenever anything is plugged in or unplugged.
+    """
+
+    index: int
+
+
+# A device problem the operator caused or can fix is not a server fault, so
+# these do not go through http_errors() (which maps every DeviceError to 500).
+_DEVICE_ERROR_STATUS: dict[str, int] = {
+    "session_active": 409,  # finish the session, then change microphone
+    "device_not_found": 409,  # list is stale — refresh and choose again
+    "device_unsuitable": 400,  # this device cannot record the study format
+    "selected_device_missing": 409,  # chosen microphone is unplugged
+}
+
+
+def _device_http(exc: DeviceError) -> HTTPException:
+    return HTTPException(
+        status_code=_DEVICE_ERROR_STATUS.get(exc.code, 500),
+        detail=exc.message,
+        headers={"X-Capture-Error-Code": exc.code},
+    )
+
+
+def _refuse_while_recording() -> None:
+    """Swapping microphones mid-session would make that session's takes
+    incomparable with each other, so it is refused outright."""
+    if service.has_active:
+        raise _device_http(
+            DeviceError(
+                "session_active",
+                "A session is in progress. Finish it before changing the "
+                "microphone — swapping devices mid-session would make its "
+                "takes incomparable with each other.",
+            )
+        )
+
+
+@router.get("/devices/inputs")
+async def list_inputs() -> dict[str, object]:
+    """Every connected input, probed at the study's capture format.
+
+    Each entry carries `supports_capture`, `rate_is_native` and a list of
+    plain-language `warnings`, so the operator can see BEFORE recording that
+    Windows would resample a device, rather than discovering it in the audio
+    afterwards.
+    """
+    try:
+        found = selection.list_input_devices()
+    except DeviceError as exc:
+        raise _device_http(exc) from exc
+    return {
+        "devices": selection.as_dicts(found),
+        "selected": selection.load_selection(),
+        "required": {
+            "sample_rate_hz": config.SAMPLE_RATE_HZ,
+            "channels": config.CHANNELS,
+            "subtype": config.SOUNDFILE_SUBTYPE,
+        },
+        "session_active": service.has_active,
+    }
+
+
+@router.post("/devices/select")
+async def select_input(body: SelectDeviceRequest) -> dict[str, object]:
+    """Choose the microphone to record from.
+
+    Refuses a device that cannot deliver the study format, and refuses to
+    change anything while a session is running.
+    """
+    _refuse_while_recording()
+    try:
+        chosen = selection.save_selection(body.index)
+    except DeviceError as exc:
+        raise _device_http(exc) from exc
+    return {
+        "selected": {"name": chosen.name, "host_api": chosen.host_api},
+        "warnings": list(chosen.warnings),
+        "recommended": chosen.recommended,
+    }
+
+
+@router.post("/devices/select/clear")
+async def clear_input_selection() -> dict[str, object]:
+    """Fall back to whichever device Windows treats as the default."""
+    _refuse_while_recording()
+    selection.clear_selection()
+    return {"selected": None}

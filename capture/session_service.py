@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from capture import config
-from capture.audio import devices, playback
+from capture.audio import devices, playback, selection
 from capture.audio.engine import LevelUpdate, RecordingEngine
 from capture.audio.qc import check_take
 from capture.domain import time as clock
@@ -161,7 +161,9 @@ class SessionService:
         directory = paths.session_dir(participant, sid)
         directory.mkdir(parents=True, exist_ok=True)
 
-        device = devices.describe_default_input()
+        # The operator's chosen microphone, re-resolved by name. Raises if it
+        # is not connected rather than quietly recording a different mic.
+        device = selection.resolve_capture_device()
         info = SessionInfo(
             participant=participant,
             session_number=number,
