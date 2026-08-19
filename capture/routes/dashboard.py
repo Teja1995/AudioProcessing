@@ -199,3 +199,44 @@ async def demo_availability() -> dict[str, object]:
         path = config.STATIC_DIR / "audio" / f"demo_{task.key}.wav"
         available[task.key] = path.is_file()
     return {"demos": available}
+
+
+@router.get("/devices/outputs")
+async def list_outputs() -> dict[str, object]:
+    """Speakers that could play the reference tone and the spoken examples.
+
+    Entries flagged `is_microphone_monitor` are the recording microphone's own
+    headphone jack. Windows usually makes that the default output when a USB
+    microphone is plugged in, which would play task 2's calibration tone
+    where nobody can hear it while the take recorded silence.
+    """
+    try:
+        found = selection.list_output_devices(refresh=not service.has_active)
+    except DeviceError as exc:
+        raise _device_http(exc) from exc
+    return {
+        "devices": selection.outputs_as_dicts(found),
+        "selected": selection.load_output_selection(),
+        "session_active": service.has_active,
+    }
+
+
+@router.post("/devices/select-output")
+async def select_output(body: SelectDeviceRequest) -> dict[str, object]:
+    """Choose the speaker. Allowed while recording: playback happens between
+    takes, and the microphone is what must not change mid-session."""
+    try:
+        chosen = selection.save_output_selection(body.index)
+    except DeviceError as exc:
+        raise _device_http(exc) from exc
+    return {
+        "selected": {"name": chosen.name, "host_api": chosen.host_api},
+        "warnings": list(chosen.warnings),
+        "recommended": chosen.recommended,
+    }
+
+
+@router.post("/devices/select-output/clear")
+async def clear_output() -> dict[str, object]:
+    selection.clear_output_selection()
+    return {"selected": None}

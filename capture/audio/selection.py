@@ -542,3 +542,208 @@ def groups_as_dicts(groups: list[MicrophoneGroup]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+# --- Output device: which speaker plays the reference tone ------------------
+#
+# Task 2 plays a fixed tone through a speaker at a fixed position and records
+# it, to detect gain or placement drift across the week. That only works if
+# the tone actually leaves a speaker in the room.
+#
+# Plugging in a USB microphone usually makes Windows adopt ITS headphone jack
+# as the default output. The tone then plays into headphones nobody is
+# wearing, the take records room silence, and it still looks like a completed
+# calibration. So the output is chosen and checked, never assumed.
+
+
+@dataclass(frozen=True, slots=True)
+class OutputDevice:
+    index: int
+    name: str
+    host_api: str
+    max_output_channels: int
+    default_samplerate: float
+    is_os_default: bool
+    is_selected: bool
+    # True when this output belongs to the microphone we record with, i.e.
+    # its headphone jack rather than a speaker in the room.
+    is_microphone_monitor: bool
+    warnings: tuple[str, ...]
+
+    @property
+    def recommended(self) -> bool:
+        return not self.is_microphone_monitor and not self.warnings
+
+
+def _endpoint_family(name: str) -> str:
+    """The device name Windows puts in brackets, lowercased and truncated.
+
+    Windows names a USB microphone's endpoints in pairs -- "Microphone (Yeti
+    Stereo Microphone)" and "Speakers (Yeti Stereo Microphone)" -- so the part
+    inside the brackets identifies the physical box.
+    """
+    inner = name
+    if "(" in name:
+        # The closing bracket is often missing: MME truncates names at 31
+        # characters, turning "Speakers (Yeti Stereo Microphone)" into
+        # "Speakers (Yeti Stereo Microphon". Requiring ")" here is what let
+        # a microphone's own headphone jack pass as a room speaker.
+        start = name.index("(") + 1
+        end = name.rindex(")") if ")" in name[start:] else len(name)
+        inner = name[start:end]
+    return inner.strip().lower()[:_MME_NAME_LIMIT]
+
+
+def _same_physical_device(a: str, b: str) -> bool:
+    left, right = _endpoint_family(a), _endpoint_family(b)
+    if not left or not right:
+        return False
+    return left.startswith(right) or right.startswith(left)
+
+
+def list_output_devices(refresh: bool = False) -> list[OutputDevice]:
+    """Every output that could play the reference tone."""
+    if refresh:
+        refresh_device_list()
+    try:
+        raw_devices = sd.query_devices()
+    except sd.PortAudioError as exc:
+        raise DeviceError(
+            "device_query_failed", f"Could not list audio devices: {exc}"
+        ) from exc
+
+    try:
+        default_output_index = sd.default.device[1]
+    except (TypeError, IndexError):
+        default_output_index = None
+
+    # The microphone we record with, so its own monitor output is spotted.
+    microphone_name = ""
+    try:
+        microphone_name = resolve_capture_device().name
+    except DeviceError:
+        pass
+
+    selected = load_output_selection()
+    devices: list[OutputDevice] = []
+    for index, raw in enumerate(raw_devices):
+        if int(raw["max_output_channels"]) < 1:
+            continue
+        name = str(raw["name"])
+        host_api = _host_api_name(raw["hostapi"])
+        monitor = bool(microphone_name) and _same_physical_device(name, microphone_name)
+
+        warnings: list[str] = []
+        if monitor:
+            warnings.append(
+                "This is the microphone's own headphone output, not a speaker "
+                "in the room. The reference tone would play into headphones "
+                "nobody is wearing, and the take would record silence."
+            )
+        if _is_virtual(name):
+            warnings.append(
+                "This routes to whatever Windows picks, so what actually "
+                "played cannot be known afterwards."
+            )
+
+        devices.append(
+            OutputDevice(
+                index=index,
+                name=name,
+                host_api=host_api,
+                max_output_channels=int(raw["max_output_channels"]),
+                default_samplerate=float(raw["default_samplerate"]),
+                is_os_default=(index == default_output_index),
+                is_selected=(
+                    selected is not None
+                    and selected["name"] == name
+                    and selected["host_api"] == host_api
+                ),
+                is_microphone_monitor=monitor,
+                warnings=tuple(warnings),
+            )
+        )
+    return devices
+
+
+def outputs_as_dicts(devices: list[OutputDevice]) -> list[dict[str, Any]]:
+    return [
+        {
+            "index": d.index,
+            "name": d.name,
+            "host_api": d.host_api,
+            "default_samplerate": d.default_samplerate,
+            "is_os_default": d.is_os_default,
+            "is_selected": d.is_selected,
+            "is_microphone_monitor": d.is_microphone_monitor,
+            "recommended": d.recommended,
+            "warnings": list(d.warnings),
+        }
+        for d in devices
+    ]
+
+
+def load_output_selection() -> dict[str, str] | None:
+    path = config.SELECTED_OUTPUT_DEVICE_PATH
+    if not path.exists():
+        return None
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.error("Could not read the selected output device (%s): %s", path, exc)
+        return None
+    if not isinstance(stored, dict) or "name" not in stored:
+        log.error("Selected-output file %s is malformed; ignoring it", path)
+        return None
+    return {"name": str(stored["name"]), "host_api": str(stored.get("host_api", ""))}
+
+
+def save_output_selection(index: int) -> OutputDevice:
+    """Record which speaker plays the tone. Stored by name, like the input."""
+    match = next(
+        (d for d in list_output_devices(refresh=True) if d.index == index), None
+    )
+    if match is None:
+        raise DeviceError(
+            "device_not_found",
+            f"No output device with index {index}. It may have been "
+            "unplugged: refresh the list and choose again.",
+        )
+    config.SELECTED_OUTPUT_DEVICE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = config.SELECTED_OUTPUT_DEVICE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps({"name": match.name, "host_api": match.host_api}, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(config.SELECTED_OUTPUT_DEVICE_PATH)
+    log.info("Output device selected: %r on %s", match.name, match.host_api)
+    for warning in match.warnings:
+        log.warning("Selected output warning: %s", warning)
+    return match
+
+
+def clear_output_selection() -> None:
+    config.SELECTED_OUTPUT_DEVICE_PATH.unlink(missing_ok=True)
+    log.info("Output device selection cleared; using the OS default")
+
+
+def resolve_playback_device() -> int | None:
+    """Index of the speaker to play through, or None for the OS default.
+
+    Unlike the microphone, a missing speaker does NOT stop the session. A tone
+    that played somewhere unexpected is a recoverable annoyance; a session
+    that refuses to start is a lost data point. It warns loudly instead.
+    """
+    selected = load_output_selection()
+    if selected is None:
+        return None
+    for device in list_output_devices():
+        if device.name == selected["name"] and device.host_api == selected["host_api"]:
+            return device.index
+    log.warning(
+        "Selected speaker %r (%s) is not connected; falling back to the "
+        "Windows default. The reference tone may not play where expected.",
+        selected["name"],
+        selected["host_api"],
+    )
+    return None

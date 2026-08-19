@@ -58,10 +58,17 @@ def play_wav(path: Path) -> None:
     it would only hide that from whoever reads the log at 3am.
     """
     _require_file(path, "Playback asset")
+    # The operator's chosen speaker. Windows adopts a USB microphone's own
+    # headphone jack as the default output, which would play task 2's
+    # calibration tone into headphones nobody is wearing while the take
+    # recorded silence. None means "no choice made, use the OS default".
+    from capture.audio.selection import resolve_playback_device
+
+    device = resolve_playback_device()
     data, samplerate = sf.read(path, dtype="float32", always_2d=False)
     # float32 holds a 24-bit sample exactly, so this is a faithful copy of
     # the vendored file, not a re-render of it.
-    sd.play(data, samplerate=samplerate, blocking=True)
+    sd.play(data, samplerate=samplerate, device=device, blocking=True)
 
 
 def reference_tone_duration_s() -> float:

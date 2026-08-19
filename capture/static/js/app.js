@@ -881,6 +881,7 @@ async function loadDevices() {
   const micSteps = asArray(info.microphone_checklist).filter((each) => typeof each === "string");
   renderChecklist(name, status, (supplied.concat(micSteps)).length ? supplied.concat(micSteps) : ENHANCEMENT_CHECKLIST);
   loadMicPicker();
+  loadSpeakerPicker();
 }
 
 
@@ -1041,6 +1042,147 @@ async function loadMicPicker() {
       })
     );
   }
+}
+
+
+// Which speaker plays the reference tone (task 2) and the spoken examples.
+//
+// Windows adopts a USB microphone's own headphone jack as the default output
+// the moment it is plugged in. The tone then plays into headphones nobody is
+// wearing, the calibration take records room silence, and it still looks
+// like a completed task. The server flags those endpoints; this refuses to
+// let one be chosen quietly.
+async function loadSpeakerPicker() {
+  const block = el("speaker-picker");
+  if (!block) return;
+  clear(block);
+  block.append(h("p", { class: "muted", text: "Looking for speakers…" }));
+
+  let data;
+  try {
+    data = await api("GET", "/api/devices/outputs");
+  } catch (err) {
+    clear(block);
+    block.append(
+      h("p", { class: "error", text: `Cannot list speakers: ${err.message}` }),
+      h("button", { class: "btn btn-quiet", type: "button", onclick: loadSpeakerPicker }, "Try again")
+    );
+    return;
+  }
+
+  const devices = asArray(data.devices);
+  clear(block);
+  if (!devices.length) {
+    block.append(h("p", { class: "error", text: "No output device found at all." }));
+    return;
+  }
+
+  const ordered = devices.slice().sort(function (a, b) {
+    if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
+    return String(a.name).localeCompare(String(b.name));
+  });
+
+  const select = h("select", { class: "mic-select", id: "speaker-select" });
+  let active = null;
+  for (const device of ordered) {
+    const note = device.is_microphone_monitor
+      ? "the microphone's own headphones — not a room speaker"
+      : device.recommended
+      ? "speaker"
+      : "routes to whatever Windows picks";
+    select.append(
+      h("option", {
+        value: String(device.index),
+        selected: device.is_selected === true,
+        text: `${device.name} — ${device.host_api} · ${note}${device.is_os_default ? " · Windows default" : ""}`,
+      })
+    );
+    if (device.is_selected) active = device;
+  }
+  select.addEventListener("change", function () {
+    selectSpeaker(Number(select.value));
+  });
+  block.append(h("label", { class: "stacked" }, "Speaker", select));
+
+  // If nothing is chosen the OS default is used, and here that default is
+  // usually the wrong thing, so say which device would actually play.
+  const fallback = ordered.find(function (d) {
+    return d.is_os_default;
+  });
+  const effective = active || fallback;
+  if (effective && asArray(effective.warnings).length) {
+    for (const warning of effective.warnings) {
+      block.append(h("p", { class: "notice", text: warning }));
+    }
+    if (!active) {
+      block.append(
+        h("p", {
+          class: "notice",
+          text:
+            "No speaker chosen, so Windows' default is used — which is the " +
+            "device above. Pick a real speaker before the first session.",
+        })
+      );
+    }
+  } else if (effective) {
+    block.append(
+      h("p", {
+        class: "ok-note",
+        text: `The reference tone will play through ${effective.name}.` +
+          (active ? "" : " (Windows' default — choose one to be sure.)"),
+      })
+    );
+  }
+
+  const actions = h("div", { class: "row-actions row-actions-left" });
+  actions.append(
+    h("button", { class: "btn btn-quiet btn-small", type: "button", onclick: loadSpeakerPicker }, "Rescan"),
+    h(
+      "button",
+      {
+        class: "btn btn-quiet btn-small",
+        type: "button",
+        onclick: function () {
+          testSpeaker(effective);
+        },
+      },
+      "Play a test tone"
+    )
+  );
+  block.append(actions);
+}
+
+async function selectSpeaker(index) {
+  const block = el("speaker-picker");
+  try {
+    await api("POST", "/api/devices/select-output", { index: index });
+  } catch (err) {
+    if (block) block.append(h("p", { class: "error", text: `Could not select that speaker: ${err.message}` }));
+    return;
+  }
+  await loadSpeakerPicker();
+}
+
+// Plays the real reference tone asset, through the browser, so the operator
+// can confirm sound comes out of the thing in the room before a participant
+// is sitting there. The recorded tone still comes from the Python side.
+function testSpeaker(device) {
+  const block = el("speaker-picker");
+  if (!block) return;
+  const player = new Audio("/static/audio/reference_tone.wav");
+  const note = h("p", { class: "hint", text: "Playing the reference tone…" });
+  block.append(note);
+  player.play().then(
+    function () {
+      note.textContent =
+        "Playing. If you cannot hear it, the wrong output is selected" +
+        (device ? ` (currently ${device.name}).` : ".");
+    },
+    function (err) {
+      note.className = "error";
+      note.textContent = `Could not play the tone: ${err.message}`;
+    }
+  );
 }
 
 async function selectMic(index) {

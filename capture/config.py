@@ -57,6 +57,11 @@ PARTICIPANTS_PATH: Final = DATA_DIR / "participants.json"  # pseudonyms + passag
 # Which microphone the operator chose. Stored by name + host API, never by
 # index: PortAudio renumbers devices whenever anything is plugged in.
 SELECTED_DEVICE_PATH: Final = DATA_DIR / "selected_input_device.json"
+# Which speaker plays the reference tone and the spoken examples.
+# Separate from the microphone: plugging in a USB microphone often makes
+# Windows adopt ITS headphone jack as the default output, which would play
+# task 2's calibration tone into headphones nobody is wearing.
+SELECTED_OUTPUT_DEVICE_PATH: Final = DATA_DIR / "selected_output_device.json"
 WITHDRAWAL_LOG_PATH: Final = DATA_DIR / "withdrawals.csv"  # tombstones, §11
 PARTIAL_SUFFIX: Final = ".partial"  # in-progress takes; renamed on clean completion
 REFERENCE_TONE_WAV: Final = STATIC_DIR / "audio" / "reference_tone.wav"

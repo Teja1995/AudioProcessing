@@ -254,3 +254,41 @@ class GroupingTests(unittest.TestCase):
         groups = selection.group_microphones([bluetooth])
         self.assertFalse(groups[0].offer_by_default)
         self.assertFalse(groups[0].is_virtual)
+
+
+class MicrophoneMonitorDetectionTests(unittest.TestCase):
+    """Windows adopts a USB microphone's own headphone jack as the default
+    output. Task 2's tone would play where nobody hears it, and the take
+    would record silence while looking like a completed calibration."""
+
+    def test_the_microphones_own_output_is_recognised(self) -> None:
+        self.assertTrue(
+            selection._same_physical_device(
+                "Speakers (Yeti Stereo Microphone)",
+                "Microphone (Yeti Stereo Microphone)",
+            )
+        )
+
+    def test_mme_truncation_without_a_closing_bracket_still_matches(self) -> None:
+        # MME cuts names at 31 characters, so the bracket is often missing.
+        # Requiring ")" is what let the Yeti's headphone jack pass as a
+        # room speaker.
+        self.assertTrue(
+            selection._same_physical_device(
+                "Speakers (Yeti Stereo Microphon",
+                "Microphone (Yeti Stereo Microphone)",
+            )
+        )
+
+    def test_a_different_device_is_not_matched(self) -> None:
+        self.assertFalse(
+            selection._same_physical_device(
+                "Speakers (Cirrus Logic High Definition Audio)",
+                "Microphone (Yeti Stereo Microphone)",
+            )
+        )
+
+    def test_names_without_brackets_do_not_match_everything(self) -> None:
+        self.assertFalse(
+            selection._same_physical_device("Speakers", "Microphone (Yeti)")
+        )
