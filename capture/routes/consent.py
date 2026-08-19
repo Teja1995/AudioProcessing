@@ -209,3 +209,45 @@ async def withdraw(pid: str, body: WithdrawRequest) -> dict[str, object]:
             "fact of the withdrawal is recorded; the recordings are gone."
         ),
     }
+
+
+@router.delete("/{pid}")
+async def delete_participant(pid: str) -> dict[str, object]:
+    """Remove a participant from the register.
+
+    For correcting a mistyped pseudonym, not for removing someone from the
+    study. If any session has been recorded the registry entry is NOT the
+    only thing that exists, so this refuses and points at withdrawal, which
+    deletes the audio and metadata too and records that it happened. Quietly
+    dropping the registry row would orphan real recordings and lose the
+    consent trail with them.
+    """
+    pseudonym = require_pseudonym(pid)
+    directory = paths.participant_dir(pseudonym)
+    sessions = (
+        sorted(child.name for child in directory.iterdir() if child.is_dir())
+        if directory.exists()
+        else []
+    )
+    if sessions:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{pseudonym} has {len(sessions)} recorded session(s), so this "
+                "would leave the audio behind with nothing describing it. Use "
+                "Withdraw on the dashboard instead: it deletes the recordings "
+                "and metadata as well and records that the withdrawal "
+                "happened."
+            ),
+        )
+
+    with http_errors():
+        existed = participants.remove_participant(pseudonym)
+        # A registered-but-never-recorded participant may still have consented.
+        # That record describes a person with no data, so it goes too.
+        consent_removed = consent_store.remove_consent(pseudonym)
+
+    if not existed:
+        raise HTTPException(status_code=404, detail=f"No participant {pseudonym}")
+    log.info("Participant %s removed from the register (no recordings)", pseudonym)
+    return {"removed": pseudonym, "consent_removed": consent_removed}

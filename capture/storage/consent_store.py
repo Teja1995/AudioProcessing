@@ -91,3 +91,19 @@ def read_consent(pseudonym: str) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         raise ValueError(f"{path}: expected a JSON object, got {type(raw).__name__}")
     return raw
+
+
+def remove_consent(pseudonym: str) -> bool:
+    """Delete a consent record. Returns whether one existed.
+
+    Only for a participant with no recordings — correcting a mistyped
+    pseudonym. Withdrawal has its own path, which also removes the audio and
+    writes a tombstone so the fact of the withdrawal outlives the data.
+    """
+    validate_pseudonym(pseudonym)
+    path = paths.consent_path(pseudonym)
+    if not path.exists():
+        return False
+    path.unlink()
+    log.info("Consent record removed for %s (no recordings existed)", pseudonym)
+    return True

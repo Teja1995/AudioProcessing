@@ -153,8 +153,34 @@ def _warnings_for(
     return tuple(found)
 
 
-def list_input_devices() -> list[InputDevice]:
-    """Every connected input device, probed at the study's capture format."""
+def refresh_device_list() -> None:
+    """Make PortAudio re-enumerate the hardware.
+
+    PortAudio snapshots the device list when it initialises and never looks
+    again, so in a long-running process a microphone stays listed after it is
+    unplugged, and a newly plugged one never appears. Tearing the library down
+    and bringing it back is the only way to get a current list.
+
+    UNSAFE while a stream is open: terminating PortAudio underneath a running
+    stream is undefined behaviour. Callers must only do this with no session
+    recording, which is why it is opt-in rather than automatic.
+    """
+    try:
+        sd._terminate()
+        sd._initialize()
+    except Exception as exc:  # noqa: BLE001 — a stale list is better than a
+        # crash here; the caller still gets whatever PortAudio last knew.
+        log.error("Could not re-enumerate audio devices: %s", exc)
+
+
+def list_input_devices(refresh: bool = False) -> list[InputDevice]:
+    """Every connected input device, probed at the study's capture format.
+
+    ``refresh`` re-enumerates first, so unplugged devices disappear and newly
+    connected ones appear. Only pass it when no stream is open.
+    """
+    if refresh:
+        refresh_device_list()
     try:
         raw_devices = sd.query_devices()
     except sd.PortAudioError as exc:
@@ -242,7 +268,9 @@ def save_selection(index: int) -> InputDevice:
     Refuses a device that cannot record the study format: better to fail here,
     in front of the operator, than to discover it in the audio afterwards.
     """
-    match = next((d for d in list_input_devices() if d.index == index), None)
+    # Fresh list: the index came from a page that may have been open for
+    # hours, and PortAudio indices shift whenever hardware changes.
+    match = next((d for d in list_input_devices(refresh=True) if d.index == index), None)
     if match is None:
         raise DeviceError(
             "device_not_found",
@@ -289,7 +317,12 @@ def resolve_capture_device() -> DeviceInfo:
     corrupt exactly the week-scale comparison the study depends on.
     """
     selected = load_selection()
-    devices = list_input_devices()
+    # Always from a fresh enumeration: this decides which physical microphone
+    # a whole session is recorded on, and a stale list could hand back an
+    # index that now belongs to a different device entirely. Safe here because
+    # no stream is open yet — SessionService refuses to start a second session
+    # while one is running.
+    devices = list_input_devices(refresh=True)
 
     if selected is None:
         # No explicit choice: fall back to whatever Windows calls the default.

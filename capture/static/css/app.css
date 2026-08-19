@@ -588,3 +588,27 @@ label.stacked textarea:focus-visible { outline: 3px solid var(--accent); outline
 }
 .borg-unanchored { border-style: dashed; }
 .borg-unanchored:hover { border-style: solid; }
+
+/* Checklist bulk control. The individual boxes stay, because the list is
+   what the operator is actually asserting; this only saves fifteen clicks
+   when everything has genuinely been checked. */
+.checklist-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 0.9rem;
+  margin: 0.5rem 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-2);
+}
+.select-all { display: flex; gap: 0.75rem; align-items: center; font-weight: 600; cursor: pointer; }
+.select-all input { width: 1.5rem; height: 1.5rem; flex: 0 0 auto; cursor: pointer; }
+
+/* Per-participant tools sit under the chooser, never inside it. */
+.cell-tools { display: flex; gap: 0.35rem; }
+.cell-tools .btn { flex: 1 1 auto; }
+.btn-danger-quiet { border-color: #5a2a2f; color: #ffbcbc; }
+.btn-danger-quiet:hover { border-color: var(--warn); color: #fff; }

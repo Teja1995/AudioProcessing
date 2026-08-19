@@ -1148,19 +1148,56 @@ function renderChecklist(deviceName, status, items) {
   const list = h("ul", { class: "checklist" });
   const boxes = [];
   const confirm = h("button", { class: "btn btn-go", type: "button", disabled: true }, "All confirmed");
+
+  // Ticking fifteen boxes one at a time, under time pressure, is how a
+  // checklist stops being read at all. The bulk control is honest about what
+  // it asserts, and the count keeps the number of steps visible.
+  const counter = h("span", { class: "hint" });
+  const selectAll = h("input", { type: "checkbox", id: "chk-all" });
+
+  function refresh() {
+    const ticked = boxes.filter(function (each) {
+      return each.checked;
+    }).length;
+    confirm.disabled = ticked !== boxes.length;
+    counter.textContent = `${ticked} of ${boxes.length} confirmed`;
+    selectAll.checked = ticked === boxes.length;
+    // Part-way through reads as neither on nor off, so the control does not
+    // claim everything is done when it is not.
+    selectAll.indeterminate = ticked > 0 && ticked < boxes.length;
+  }
+
+  selectAll.addEventListener("change", function () {
+    const value = selectAll.checked;
+    for (const box of boxes) box.checked = value;
+    refresh();
+  });
+
   for (let i = 0; i < steps.length; i += 1) {
     const box = h("input", { type: "checkbox", id: `chk-${i}` });
-    box.addEventListener("change", function () {
-      confirm.disabled = !boxes.every((each) => each.checked);
-    });
+    box.addEventListener("change", refresh);
     boxes.push(box);
     list.append(h("li", {}, box, h("label", { for: `chk-${i}`, text: steps[i] })));
   }
+
+  const head = h(
+    "div",
+    { class: "checklist-head" },
+    h(
+      "label",
+      { class: "select-all", for: "chk-all" },
+      selectAll,
+      h("span", { text: "I have done all of these" })
+    ),
+    counter
+  );
+
   confirm.addEventListener("click", function () {
     writeChecklistDone(deviceName, true);
     renderChecklist(deviceName, status, steps);
   });
-  block.append(list, h("div", { class: "row-actions" }, confirm));
+  block.append(head, list, h("div", { class: "row-actions" }, confirm));
+  refresh();
   renderPicker();
 }
 
@@ -1312,7 +1349,8 @@ function renderPicker() {
         h("span", { class: participant.passage === false ? "sub sub-warn" : "sub", text: sub.join(" · ") })
       )
     );
-    cell.append(
+    const tools = h("div", { class: "cell-tools" });
+    tools.append(
       h(
         "button",
         {
@@ -1325,6 +1363,28 @@ function renderPicker() {
         participant.passage === false ? "Set passage" : "Change passage"
       )
     );
+    // Removing a mistyped pseudonym is not the same act as withdrawing
+    // someone from the study. The server refuses this once any session has
+    // been recorded and points at withdrawal, which also deletes the audio
+    // and records that it happened.
+    const started = Number.isFinite(participant.nextSession) && participant.nextSession > 1;
+    tools.append(
+      h(
+        "button",
+        {
+          class: "btn btn-quiet btn-small btn-danger-quiet",
+          type: "button",
+          title: started
+            ? "This person has recordings — use Withdraw on the dashboard"
+            : "Remove this pseudonym from the register",
+          onclick: function () {
+            removeParticipant(participant, started);
+          },
+        },
+        "Remove"
+      )
+    );
+    cell.append(tools);
     picker.append(cell);
   }
   block.append(picker);
@@ -1432,6 +1492,43 @@ async function saveParticipant(pseudonym, passage, button, error) {
   } finally {
     button.disabled = false;
     button.textContent = label;
+  }
+  await loadParticipants();
+}
+
+async function removeParticipant(participant, hasRecordings) {
+  const block = el("participant-block");
+  if (hasRecordings) {
+    window.alert(
+      `${participant.pseudonym} already has recorded sessions.
+
+` +
+        "Use Withdraw on the adherence dashboard instead. That deletes their " +
+        "audio and metadata as well, and records that the withdrawal " +
+        "happened — removing only the name here would leave the recordings " +
+        "behind with nothing describing them."
+    );
+    return;
+  }
+  const sure = window.confirm(
+    `Remove ${participant.pseudonym} from the participant list?
+
+` +
+      "They have no recordings, so this only clears the pseudonym and any " +
+      "consent record. It cannot be undone, but nothing is lost."
+  );
+  if (!sure) return;
+  try {
+    await api("DELETE", `/api/participants/${encodeURIComponent(participant.pseudonym)}`);
+  } catch (err) {
+    if (block) {
+      block.append(h("p", { class: "error", text: `Not removed: ${err.message}` }));
+    }
+    return;
+  }
+  if (app.participant === participant.pseudonym) {
+    app.participant = null;
+    app.participantRecord = null;
   }
   await loadParticipants();
 }

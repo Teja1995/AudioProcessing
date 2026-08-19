@@ -128,8 +128,11 @@ async def list_inputs() -> dict[str, object]:
     Windows would resample a device, rather than discovering it in the audio
     afterwards.
     """
+    # Re-enumerate so an unplugged microphone actually disappears from the
+    # list — but never while a session is recording, because tearing down
+    # PortAudio underneath an open stream is undefined behaviour.
     try:
-        found = selection.list_input_devices()
+        found = selection.list_input_devices(refresh=not service.has_active)
     except DeviceError as exc:
         raise _device_http(exc) from exc
     groups = selection.group_microphones(found)
