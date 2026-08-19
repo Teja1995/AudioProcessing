@@ -1444,16 +1444,125 @@ function readUtc(prefix) {
   return `${day}T${clock}`;
 }
 
+// Open the browser's own calendar / clock as soon as the field is touched.
+//
+// <input type="date"> and type="time" already carry native pickers, but they
+// only open from a small icon at the right-hand edge, which is fiddly for a
+// tired operator. showPicker() opens the same native widget from anywhere in
+// the field. It is Chrome/Edge 99+; where it is missing, or where the browser
+// refuses because the call did not come from a user gesture, the field still
+// works exactly as before by typing — hence the guarded call rather than a
+// hand-built calendar we would have to maintain.
+//
+// There is deliberately NO "use the current time" button anywhere near these
+// fields. The habitat clocks are scrambled on purpose, so the laptop cannot
+// tell the time; filling this from the device clock would silently record a
+// fiction as the trusted timestamp (CLAUDE.md, Time).
+function attachNativePicker(node) {
+  if (!node || typeof node.showPicker !== "function") return;
+  const open = function () {
+    try {
+      node.showPicker();
+    } catch (err) {
+      // NotAllowedError (no user gesture) or unsupported: typing still works.
+    }
+  };
+  node.addEventListener("click", open);
+  node.addEventListener("keydown", function (event) {
+    // Enter or Space on a focused field opens the picker too, so the flow
+    // works without a mouse.
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      open();
+    }
+  });
+}
+
+// Nudge the entered time without reopening the picker. Reading a watch
+// usually means "the picker got me close, now match the seconds", and
+// retyping the whole field for that is where mistakes come from. These shift
+// the value the OPERATOR entered; no clock on this machine is consulted.
+function nudgeUtc(prefix, minutes, announce) {
+  const date = el(`${prefix}-utc-date`);
+  const time = el(`${prefix}-utc-time`);
+  if (!date || !time || !date.value || !time.value) {
+    if (announce) announce("Pick a date and time first, then adjust.");
+    return;
+  }
+  let clock = time.value;
+  if (clock.length === 5) clock = `${clock}:00`;
+  // Parsed as UTC and formatted back as UTC, so this arithmetic never picks
+  // up the machine's timezone.
+  const asUtc = new Date(`${date.value}T${clock}Z`);
+  if (Number.isNaN(asUtc.getTime())) {
+    if (announce) announce("That date and time could not be read.");
+    return;
+  }
+  asUtc.setUTCMinutes(asUtc.getUTCMinutes() + minutes);
+  const iso = asUtc.toISOString();
+  date.value = iso.slice(0, 10);
+  time.value = iso.slice(11, 19);
+  date.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function utcNudgeControls(prefix, onChange) {
+  const row = h("div", { class: "row-actions row-actions-left nudge-row" });
+  const note = h("span", { class: "hint" });
+  const announce = function (text) {
+    note.textContent = text || "";
+  };
+  const steps = [
+    ["−1 h", -60],
+    ["−1 min", -1],
+    ["+1 min", 1],
+    ["+1 h", 60],
+  ];
+  for (const [label, minutes] of steps) {
+    row.append(
+      h(
+        "button",
+        {
+          class: "btn btn-quiet btn-small",
+          type: "button",
+          onclick: function () {
+            announce("");
+            nudgeUtc(prefix, minutes, announce);
+            if (onChange) onChange(readUtc(prefix));
+          },
+        },
+        label
+      )
+    );
+  }
+  row.append(note);
+  return row;
+}
+
 function wireUtc(prefix, onChange) {
   for (const suffix of ["-utc-date", "-utc-time"]) {
     const node = el(prefix + suffix);
     if (!node) continue;
+    attachNativePicker(node);
     node.addEventListener("input", function () {
       const value = readUtc(prefix);
       const preview = el(`${prefix}-utc-preview`);
       if (preview) preview.textContent = value ? `${value} UTC` : "—";
       if (onChange) onChange(value);
     });
+  }
+  // Added once, from JS, so the two screens that enter a UTC time cannot
+  // drift apart.
+  const entry = el(`${prefix}-utc-date`);
+  const container = entry && entry.closest(".utc-entry");
+  if (container) {
+    const next = container.nextElementSibling;
+    const alreadyThere = next && next.classList && next.classList.contains("nudge-row");
+    if (!alreadyThere) {
+      container.parentNode.insertBefore(
+        utcNudgeControls(prefix, onChange),
+        container.nextSibling
+      );
+    }
   }
 }
 

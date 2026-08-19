@@ -527,3 +527,29 @@ label.stacked textarea {
 }
 label.stacked input:focus-visible,
 label.stacked textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+
+/* UTC entry: the whole field opens the browser's calendar / clock, so it
+   should look like something you click, not only something you type into. */
+.utc-entry input[type="date"],
+.utc-entry input[type="time"] {
+  cursor: pointer;
+  font-size: 1.15rem;
+  min-height: 3.4rem;
+  letter-spacing: 0.02em;
+}
+.utc-entry input[type="date"]:hover,
+.utc-entry input[type="time"]:hover { border-color: var(--accent); }
+
+/* The native picker icon is small and dark by default; make it obvious. */
+.utc-entry input::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  filter: invert(1);
+  opacity: 0.75;
+  transform: scale(1.3);
+  margin-left: 0.4rem;
+}
+.utc-entry input::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+
+/* Fine adjustment after the picker has got you close. */
+.nudge-row { gap: 0.4rem; margin: 0.5rem 0 0; flex-wrap: wrap; }
+.nudge-row .btn-small { min-width: 4.5rem; }
