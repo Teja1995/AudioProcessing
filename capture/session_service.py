@@ -620,6 +620,13 @@ def qc_to_dict(qc: Any) -> dict[str, Any] | None:
         "voicing_detected": qc.voicing_detected,
         "duration_ok": qc.duration_ok,
         "warnings": list(qc.warnings),
+        # Real resolution of the samples, not the container's: a 16-bit ADC
+        # in a 24-bit file. Surfaced so the operator can see a microphone or
+        # driver change on the QC screen rather than only in the metadata.
+        "effective_bits": qc.effective_bits,
+        "noise_floor_dbfs": (
+            None if qc.noise_floor_dbfs is None else round(qc.noise_floor_dbfs, 2)
+        ),
     }
 
 

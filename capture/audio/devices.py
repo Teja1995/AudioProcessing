@@ -195,14 +195,34 @@ def startup_report() -> dict[str, object]:
     afterwards. Raises DeviceError when no input device exists - a recording
     tool with no microphone must fail at startup, loudly.
     """
-    raw = _query_default_input_raw()
-    device = describe_default_input()
+    # Report the device that WILL be used, not whatever Windows calls the
+    # default. They are frequently different: the operator picks the USB
+    # microphone on a direct host API, while the OS default is often the
+    # same microphone on a resampling one. Logging the wrong device would
+    # make this drift anchor useless (CLAUDE.md, Hard audio requirements).
+    # Imported here rather than at module scope because selection imports
+    # this module.
+    from capture.audio import selection
+
+    try:
+        device = selection.resolve_capture_device()
+        selected = selection.load_selection()
+    except DeviceError:
+        # The chosen microphone is unplugged, or there is none at all. The
+        # report must still describe something, and the session start will
+        # raise with the real explanation.
+        log.exception("Could not resolve the capture device for the report")
+        device = describe_default_input()
+        selected = None
+
+    raw = sd.query_devices(device.index)
     gain = read_os_input_gain()
     status = enhancement_status()
 
     report: dict[str, object] = {
         "input_device_name": device.name,
         "input_device_index": device.index,
+        "device_chosen_by_operator": selected is not None,
         "host_api": _host_api_name(raw),
         "max_input_channels": device.max_input_channels,
         "device_default_samplerate_hz": device.default_samplerate,

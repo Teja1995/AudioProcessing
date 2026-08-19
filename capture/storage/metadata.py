@@ -329,6 +329,11 @@ def _qc_from_json(raw: Mapping[str, Any], where: Path) -> QCResult:
         voicing_detected=_require(raw, "voicing_detected", where),
         duration_ok=_require(raw, "duration_ok", where),
         warnings=tuple(warnings),
+        # Both default to None for takes recorded before these were measured,
+        # so older meta.json files still load. None is meaningful in each
+        # case: "not measurable" and "floor not yet known".
+        effective_bits=raw.get("effective_bits"),
+        noise_floor_dbfs=raw.get("noise_floor_dbfs"),
     )
 
 

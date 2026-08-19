@@ -33,6 +33,12 @@
     <div class="card">
       <h3>Microphone</h3>
       <div id="device-block" class="block">Loading…</div>
+      <!-- Which microphone to record from. The habitat uses a USB mic, and
+           the same physical microphone appears several times under different
+           host APIs which are NOT equivalent: some resample silently. The
+           server probes each one and supplies the warnings shown here. -->
+      <h3>Which microphone?</h3>
+      <div id="mic-picker" class="block">Loading…</div>
       <div id="checklist-block" class="block"></div>
     </div>
 

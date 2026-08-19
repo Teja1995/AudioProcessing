@@ -858,7 +858,167 @@ async function loadDevices() {
   // The wording comes from the server when it supplies it, so there is one
   // copy of the checklist and it cannot drift out of step with the run log.
   const supplied = asArray(info.manual_checklist).filter((each) => typeof each === "string");
-  renderChecklist(name, status, supplied.length ? supplied : ENHANCEMENT_CHECKLIST);
+  const micSteps = asArray(info.microphone_checklist).filter((each) => typeof each === "string");
+  renderChecklist(name, status, (supplied.concat(micSteps)).length ? supplied.concat(micSteps) : ENHANCEMENT_CHECKLIST);
+  loadMicPicker();
+}
+
+
+// ---------------------------------------------------------------------------
+// Microphone picker.
+//
+// The same physical microphone appears once per host API and they are NOT
+// equivalent: MME and DirectSound run through the Windows mixer and resample
+// silently, while WASAPI and WDM-KS open the hardware directly. The server
+// probes every device at the study's exact capture format and returns the
+// warnings rendered here, so the operator sees the problem BEFORE recording
+// rather than discovering it in the audio afterwards.
+
+async function loadMicPicker() {
+  const block = el("mic-picker");
+  if (!block) return;
+  clear(block);
+  block.append(h("p", { class: "muted", text: "Looking for microphones…" }));
+
+  let data;
+  try {
+    data = await api("GET", "/api/devices/inputs");
+  } catch (err) {
+    clear(block);
+    block.append(
+      h("p", { class: "error", text: `Cannot list microphones: ${err.message}` }),
+      h("button", { class: "btn btn-quiet", type: "button", onclick: loadMicPicker }, "Try again")
+    );
+    return;
+  }
+
+  const devices = asArray(data.devices);
+  const required = data.required || {};
+  const selected = data.selected || null;
+  const locked = data.session_active === true;
+
+  clear(block);
+  block.append(
+    h("p", {
+      class: "hint",
+      text:
+        `The study records ${required.sample_rate_hz || 48000} Hz ` +
+        `${required.channels === 1 ? "mono" : "multi-channel"}. ` +
+        "A microphone that cannot deliver that is not offered.",
+    })
+  );
+
+  if (locked) {
+    block.append(
+      h("p", {
+        class: "notice",
+        text:
+          "A session is in progress, so the microphone cannot be changed. " +
+          "Swapping devices mid-session would make its takes incomparable.",
+      })
+    );
+  }
+
+  if (!devices.length) {
+    block.append(h("p", { class: "error", text: "No input devices found at all. Is the microphone plugged in?" }));
+    block.append(h("button", { class: "btn btn-quiet", type: "button", onclick: loadMicPicker }, "Rescan"));
+    return;
+  }
+
+  // Recommended devices first: same microphone, better path.
+  const ordered = devices.slice().sort((a, b) => {
+    if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
+    if (a.supports_capture !== b.supports_capture) return a.supports_capture ? -1 : 1;
+    return String(a.name).localeCompare(String(b.name));
+  });
+
+  const list = h("div", { class: "picker" });
+  for (const device of ordered) {
+    const chosen =
+      selected && selected.name === device.name && selected.host_api === device.host_api;
+    const label = device.recommended
+      ? "recommended"
+      : device.supports_capture
+      ? "usable, with warnings"
+      : "cannot record the study format";
+
+    const button = h(
+      "button",
+      {
+        class: "btn" + (chosen ? " btn-go" : ""),
+        type: "button",
+        disabled: locked || !device.supports_capture,
+        title: device.supports_capture ? "" : String(device.capture_error || ""),
+        onclick: () => selectMic(device.index),
+      },
+      h("span", { class: "name", text: device.name }),
+      h("span", {
+        class: "sub" + (device.recommended ? "" : " sub-warn"),
+        text:
+          `${device.host_api} · ${Math.round(device.default_samplerate)} Hz · ${label}` +
+          (chosen ? " · SELECTED" : "") +
+          (device.is_os_default ? " · Windows default" : ""),
+      })
+    );
+    list.append(button);
+  }
+  block.append(list);
+
+  // Warnings for whatever is actually selected, spelled out rather than
+  // hidden behind a tooltip.
+  const active = ordered.find(
+    (d) => selected && selected.name === d.name && selected.host_api === d.host_api
+  );
+  if (!selected) {
+    block.append(
+      h("p", {
+        class: "notice",
+        text:
+          "No microphone chosen, so Windows' default is used — which is often " +
+          "a resampling path. Choose one above before the first session.",
+      })
+    );
+  } else if (active && asArray(active.warnings).length) {
+    for (const warning of active.warnings) {
+      block.append(h("p", { class: "notice", text: warning }));
+    }
+  } else if (active) {
+    block.append(
+      h("p", { class: "ok-note", text: `Recording from ${active.name} via ${active.host_api}. Nothing in the path alters the signal.` })
+    );
+  }
+
+  const actions = h("div", { class: "row-actions row-actions-left" });
+  actions.append(h("button", { class: "btn btn-quiet", type: "button", onclick: loadMicPicker }, "Rescan"));
+  if (selected && !locked) {
+    actions.append(
+      h("button", { class: "btn btn-quiet", type: "button", onclick: clearMicSelection }, "Use Windows default")
+    );
+  }
+  block.append(actions);
+}
+
+async function selectMic(index) {
+  const block = el("mic-picker");
+  try {
+    await api("POST", "/api/devices/select", { index: index });
+  } catch (err) {
+    if (block) block.append(h("p", { class: "error", text: `Could not select that microphone: ${err.message}` }));
+    return;
+  }
+  await loadMicPicker();
+  await loadDevices();
+}
+
+async function clearMicSelection() {
+  const block = el("mic-picker");
+  try {
+    await api("POST", "/api/devices/select/clear");
+  } catch (err) {
+    if (block) block.append(h("p", { class: "error", text: `Could not clear the selection: ${err.message}` }));
+    return;
+  }
+  await loadMicPicker();
 }
 
 function firstString(candidates) {

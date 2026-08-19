@@ -161,6 +161,10 @@ class MetaRoundTripTests(StorageTestCase):
                     voicing_detected=False,
                     duration_ok=True,
                     warnings=(),
+                    # The Yeti's ADC is 16-bit inside a 24-bit container, and
+                    # the silence take has no floor to compare against yet.
+                    effective_bits=16,
+                    noise_floor_dbfs=None,
                 ),
                 kept=True,
                 borg_cr10=None,
@@ -183,6 +187,8 @@ class MetaRoundTripTests(StorageTestCase):
                     voicing_detected=True,
                     duration_ok=True,
                     warnings=("clipping detected", "RMS out of range"),
+                    effective_bits=16,
+                    noise_floor_dbfs=-58.25,
                 ),
                 kept=False,
                 borg_cr10="n/a",
@@ -631,3 +637,105 @@ class WithdrawalTests(StorageTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MeasuredQcFieldsSurviveRoundTripTests(StorageTestCase):
+    """These were written to meta.json but silently dropped on read, so the
+    real bit depth of the dataset vanished the moment it was reloaded."""
+
+    def test_bit_depth_and_noise_floor_survive(self) -> None:
+        meta = SessionMeta(
+            info=SessionInfo(
+                participant="P09",
+                session_number=1,
+                session_id="001_20260822T073000Z",
+                utc_operator_entered_iso="2026-08-22T07:30:00+00:00",
+                device_clock_iso="2019-03-11T22:14:00+00:00",
+                input_device_name="Microphone (Yeti Stereo Microphone)",
+                sample_rate_hz=48000,
+                bit_depth=24,
+            ),
+            takes=[
+                TakeRecord(
+                    filename="03_sustained_a_take1.wav",
+                    task_number=3,
+                    task_key="sustained_a",
+                    stem="sustained_a",
+                    take_n=1,
+                    redo_n=0,
+                    device_clock_iso="2019-03-11T22:14:09+00:00",
+                    monotonic_offset_s=1.0,
+                    duration_s=5.0,
+                    qc=QCResult(
+                        clipped=False,
+                        rms_dbfs=-30.0,
+                        peak_dbfs=-12.0,
+                        rms_in_range=None,
+                        voicing_detected=True,
+                        duration_ok=True,
+                        warnings=(),
+                        effective_bits=16,
+                        noise_floor_dbfs=-57.5,
+                    ),
+                )
+            ],
+        )
+        metadata.write_meta(meta)
+        loaded = metadata.load_meta_if_exists("P09", "001_20260822T073000Z")
+        self.assertIsNotNone(loaded)
+        qc = loaded.takes[0].qc
+        self.assertEqual(qc.effective_bits, 16)
+        self.assertEqual(qc.noise_floor_dbfs, -57.5)
+
+    def test_older_meta_without_the_fields_still_loads(self) -> None:
+        # Files written before these were measured must not fail to load.
+        session_dir = self.data / "P09" / "001_20260822T073000Z"
+        session_dir.mkdir(parents=True)
+        (session_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "schema": "capture.meta/1",
+                    "info": {
+                        "participant": "P09",
+                        "session_number": 1,
+                        "session_id": "001_20260822T073000Z",
+                        "utc_operator_entered_iso": "2026-08-22T07:30:00+00:00",
+                        "device_clock_iso": "2019-03-11T22:14:00+00:00",
+                        "input_device_name": "old mic",
+                        "sample_rate_hz": 48000,
+                        "bit_depth": 24,
+                    },
+                    "reference_measures": {},
+                    "covariates": {},
+                    "takes": [
+                        {
+                            "filename": "01_silence.wav",
+                            "task_number": 1,
+                            "task_key": "silence",
+                            "stem": "silence",
+                            "take_n": 1,
+                            "redo_n": 0,
+                            "device_clock_iso": "2019-03-11T22:14:09+00:00",
+                            "monotonic_offset_s": 0.0,
+                            "duration_s": 3.0,
+                            "kept": True,
+                            "borg_cr10": None,
+                            "qc": {
+                                "clipped": False,
+                                "rms_dbfs": -60.0,
+                                "peak_dbfs": -40.0,
+                                "rms_in_range": None,
+                                "voicing_detected": False,
+                                "duration_ok": True,
+                                "warnings": [],
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        loaded = metadata.load_meta_if_exists("P09", "001_20260822T073000Z")
+        self.assertIsNotNone(loaded)
+        self.assertIsNone(loaded.takes[0].qc.effective_bits)
+        self.assertIsNone(loaded.takes[0].qc.noise_floor_dbfs)
