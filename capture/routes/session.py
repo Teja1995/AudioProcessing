@@ -133,7 +133,6 @@ class CovariatesRequest(BaseModel):
     hours_slept: float | Literal["n/a"] | None = None
     upper_respiratory_symptoms: bool | Literal["n/a"] | None = None
     medication: str | Literal["n/a"] | None = None
-    menstrual_cycle_phase: str | Literal["n/a"] | None = None
     habitat_temperature_c: float | Literal["n/a"] | None = None
     habitat_humidity_pct: float | Literal["n/a"] | None = None
 
@@ -307,7 +306,6 @@ async def submit_covariates(sid: str, body: CovariatesRequest) -> dict[str, obje
         hours_slept=body.hours_slept,
         upper_respiratory_symptoms=body.upper_respiratory_symptoms,
         medication=body.medication,
-        menstrual_cycle_phase=body.menstrual_cycle_phase,
         habitat_temperature_c=body.habitat_temperature_c,
         habitat_humidity_pct=body.habitat_humidity_pct,
     )

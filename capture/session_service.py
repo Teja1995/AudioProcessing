@@ -176,7 +176,9 @@ class SessionService:
 
         # The operator's chosen microphone, re-resolved by name. Raises if it
         # is not connected rather than quietly recording a different mic.
-        device = selection.resolve_capture_device()
+        # refresh=True is safe here and nowhere else: no stream is open
+        # yet, and a second session cannot start while one is running.
+        device = selection.resolve_capture_device(refresh=True)
         info = SessionInfo(
             participant=participant,
             session_number=number,

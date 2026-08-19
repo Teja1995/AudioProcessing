@@ -292,3 +292,58 @@ class MicrophoneMonitorDetectionTests(unittest.TestCase):
         self.assertFalse(
             selection._same_physical_device("Speakers", "Microphone (Yeti)")
         )
+
+
+class StreamInterlockTests(unittest.TestCase):
+    """Re-enumerating terminates PortAudio, which destroys any open stream.
+
+    A live session died mid-take because the speaker picker called
+    resolve_capture_device(), which refreshed unconditionally. Guarding each
+    caller was not enough, so the unsafe operation now refuses instead.
+    """
+
+    def setUp(self) -> None:
+        # Whatever this test does, leave the counter as it was found.
+        self.addCleanup(self._drain)
+
+    def _drain(self) -> None:
+        while selection.streams_are_open():
+            selection.register_stream_closed()
+
+    def test_refresh_is_skipped_while_a_stream_is_open(self) -> None:
+        selection.register_stream_open()
+        with mock.patch.object(selection.sd, "_terminate") as terminate:
+            selection.refresh_device_list()
+        terminate.assert_not_called()
+
+    def test_refresh_runs_once_the_stream_is_closed(self) -> None:
+        selection.register_stream_open()
+        selection.register_stream_closed()
+        with mock.patch.object(selection.sd, "_terminate") as terminate, mock.patch.object(
+            selection.sd, "_initialize"
+        ):
+            selection.refresh_device_list()
+        terminate.assert_called_once()
+
+    def test_nested_streams_keep_the_interlock_set(self) -> None:
+        selection.register_stream_open()
+        selection.register_stream_open()
+        selection.register_stream_closed()
+        self.assertTrue(selection.streams_are_open())
+        selection.register_stream_closed()
+        self.assertFalse(selection.streams_are_open())
+
+    def test_the_counter_never_goes_negative(self) -> None:
+        # An engine that fails to open still calls close(); an unbalanced
+        # release must not leave the interlock permanently disabled.
+        selection.register_stream_closed()
+        selection.register_stream_closed()
+        selection.register_stream_open()
+        self.assertTrue(selection.streams_are_open())
+
+    def test_listing_outputs_does_not_re_enumerate(self) -> None:
+        # This is the exact path that killed the session.
+        selection.register_stream_open()
+        with mock.patch.object(selection.sd, "_terminate") as terminate:
+            selection.list_output_devices(refresh=False)
+        terminate.assert_not_called()

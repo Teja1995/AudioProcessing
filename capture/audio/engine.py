@@ -55,7 +55,11 @@ from capture.storage.writer import TakeWriter
 # Host APIs that open the hardware pin directly, so a reported default
 # rate that differs from ours is not evidence of resampling. Defined in
 # capture.audio.selection; imported here to keep one definition.
-from capture.audio.selection import DIRECT_HOST_APIS
+from capture.audio.selection import (
+    DIRECT_HOST_APIS,
+    register_stream_closed,
+    register_stream_open,
+)
 
 log = logging.getLogger("capture.audio.engine")
 
@@ -185,6 +189,10 @@ class RecordingEngine:
         # in this file, or anywhere else, changes it — the guarantee is
         # enforced by omission (ARCHITECTURE.md §2).
         self._stream = stream
+        # Block device re-enumeration for as long as this stream lives.
+        # Re-enumerating terminates PortAudio, which destroys the stream out
+        # from under a take in progress.
+        register_stream_open()
 
         if float(stream.samplerate) != float(config.SAMPLE_RATE_HZ):
             self.close()
@@ -285,6 +293,10 @@ class RecordingEngine:
                 stream.close()
             except (sd.PortAudioError, OSError):
                 log.exception("Error closing the input stream")
+            finally:
+                # Released even if closing failed: leaving the interlock set
+                # would block every future rescan for the life of the process.
+                register_stream_closed()
 
         # Only after the stream is stopped: no new blocks can arrive now.
         self._abort_current_take()

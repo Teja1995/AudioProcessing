@@ -138,7 +138,6 @@ class MetaRoundTripTests(StorageTestCase):
             hours_slept=6.5,
             upper_respiratory_symptoms=False,
             medication=None,
-            menstrual_cycle_phase="n/a",
             habitat_temperature_c=22.5,
             habitat_humidity_pct=41.0,
         )

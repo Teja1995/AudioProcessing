@@ -61,7 +61,6 @@ class Covariates:
     hours_slept: NAable[float] = None
     upper_respiratory_symptoms: NAable[bool] = None
     medication: NAable[str] = None
-    menstrual_cycle_phase: NAable[str] = None  # where applicable
     habitat_temperature_c: NAable[float] = None
     habitat_humidity_pct: NAable[float] = None
 

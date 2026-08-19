@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import asdict, dataclass
 from typing import Any, Final
 
@@ -153,6 +154,36 @@ def _warnings_for(
     return tuple(found)
 
 
+# Open PortAudio streams. Re-enumeration tears the library down, which
+# destroys any stream that is running, so the count is the interlock: the
+# engine registers a stream for as long as it holds one, and re-enumeration
+# refuses while the count is above zero.
+#
+# This exists because a guard on the caller was not enough. The speaker
+# picker called resolve_capture_device() to spot the microphone's own
+# headphone jack, that refreshed unconditionally, and simply opening the
+# start screen mid-session killed the recording.
+_open_streams = 0
+_stream_lock = threading.Lock()
+
+
+def register_stream_open() -> None:
+    global _open_streams
+    with _stream_lock:
+        _open_streams += 1
+
+
+def register_stream_closed() -> None:
+    global _open_streams
+    with _stream_lock:
+        _open_streams = max(0, _open_streams - 1)
+
+
+def streams_are_open() -> bool:
+    with _stream_lock:
+        return _open_streams > 0
+
+
 def refresh_device_list() -> None:
     """Make PortAudio re-enumerate the hardware.
 
@@ -165,6 +196,11 @@ def refresh_device_list() -> None:
     stream is undefined behaviour. Callers must only do this with no session
     recording, which is why it is opt-in rather than automatic.
     """
+    if streams_are_open():
+        # A stale list is a cosmetic problem; a destroyed stream loses a take
+        # and ends the session. Never the second one.
+        log.debug("Skipping device re-enumeration: a stream is open")
+        return
     try:
         sd._terminate()
         sd._initialize()
@@ -308,7 +344,7 @@ def clear_selection() -> None:
     log.info("Input device selection cleared; using the OS default")
 
 
-def resolve_capture_device() -> DeviceInfo:
+def resolve_capture_device(refresh: bool = False) -> DeviceInfo:
     """The device a session should open, re-resolved by name every time.
 
     If the operator chose a device and it is not currently connected, this
@@ -317,12 +353,12 @@ def resolve_capture_device() -> DeviceInfo:
     corrupt exactly the week-scale comparison the study depends on.
     """
     selected = load_selection()
-    # Always from a fresh enumeration: this decides which physical microphone
-    # a whole session is recorded on, and a stale list could hand back an
-    # index that now belongs to a different device entirely. Safe here because
-    # no stream is open yet — SessionService refuses to start a second session
-    # while one is running.
-    devices = list_input_devices(refresh=True)
+    # ``refresh`` is the caller's promise that no stream is open. Session
+    # start passes it, because that decision picks the microphone a whole
+    # session is recorded on and a stale index could name a different device.
+    # Everything else must not, and refresh_device_list() refuses anyway if a
+    # stream is running.
+    devices = list_input_devices(refresh=refresh)
 
     if selected is None:
         # No explicit choice: fall back to whatever Windows calls the default.
@@ -621,7 +657,10 @@ def list_output_devices(refresh: bool = False) -> list[OutputDevice]:
     # The microphone we record with, so its own monitor output is spotted.
     microphone_name = ""
     try:
-        microphone_name = resolve_capture_device().name
+        # Deliberately without refresh: this is only used to label the
+        # microphone's own headphone jack, and re-enumerating here is what
+        # killed a live recording when the start screen was opened.
+        microphone_name = resolve_capture_device(refresh=False).name
     except DeviceError:
         pass
 
