@@ -219,6 +219,13 @@ def startup_report() -> dict[str, object]:
     gain = read_os_input_gain()
     status = enhancement_status()
 
+    # Reuse the picker's judgement rather than repeating the rule here.
+    match = next(
+        (d for d in selection.list_input_devices() if d.index == device.index), None
+    )
+    device_warnings = list(match.warnings) if match else []
+    host_api_direct = bool(match) and match.host_api in selection.DIRECT_HOST_APIS
+
     report: dict[str, object] = {
         "input_device_name": device.name,
         "input_device_index": device.index,
@@ -229,6 +236,13 @@ def startup_report() -> dict[str, object]:
         "capture_sample_rate_hz": config.SAMPLE_RATE_HZ,
         "capture_channels": config.CHANNELS,
         "capture_subtype": config.SOUNDFILE_SUBTYPE,
+        "host_api_is_direct": host_api_direct,
+        # The authoritative verdict on this device, from the same host-API
+        # aware rule the picker uses. The UI must render these rather than
+        # re-deriving anything: a rate mismatch means resampling on MME and
+        # DirectSound, and means nothing at all on WDM-KS and WASAPI, which
+        # open the hardware pin and would have rejected the rate outright.
+        "warnings": device_warnings,
         "os_gain_reading": gain,
         "os_gain_readable": gain is not None,
         "os_gain_note": GAIN_UNREADABLE_NOTE if gain is None else "",

@@ -816,7 +816,12 @@ async function loadDevices() {
 
   clear(block);
   const list = h("dl", { class: "kv" });
-  list.append(h("dt", { text: "Input device" }), h("dd", { text: name || "not reported" }));
+  list.append(
+    h("dt", { text: "Input device" }),
+    h("dd", {
+      text: (name || "not reported") + (info.host_api ? ` — ${info.host_api}` : ""),
+    })
+  );
   list.append(
     h("dt", { text: "OS gain reading" }),
     h("dd", {
@@ -848,18 +853,24 @@ async function loadDevices() {
     })
   );
 
-  // The OS silently resampling the input is processing applied before capture,
-  // which the study cannot have. Both numbers are already in this report.
-  const deviceRate = Number(info.device_default_samplerate_hz);
-  const captureRate = Number(info.capture_sample_rate_hz);
-  if (Number.isFinite(deviceRate) && Number.isFinite(captureRate) && deviceRate !== captureRate) {
+  // Warnings come from the server, which knows the host API. A rate
+  // mismatch means resampling on MME and DirectSound, and means nothing on
+  // WDM-KS and WASAPI: those open the hardware pin and would have refused
+  // the rate outright rather than quietly converting. Re-deriving that rule
+  // here is how this screen ended up warning about a path measured to be
+  // bit-exact.
+  const deviceWarnings = asArray(info.warnings).filter(function (each) {
+    return typeof each === "string" && each.trim();
+  });
+  if (deviceWarnings.length) {
+    for (const warning of deviceWarnings) {
+      block.append(h("p", { class: "notice", text: warning }));
+    }
+  } else if (info.host_api) {
     block.append(
       h("p", {
-        class: "notice",
-        text:
-          `The OS has this device set to ${deviceRate} Hz but capture runs at ${captureRate} Hz. ` +
-          "Windows will resample, which is processing applied before capture. Set the device's " +
-          "default format to " + captureRate + " Hz in the sound settings before recording.",
+        class: "ok-note",
+        text: `Recording via ${info.host_api}. Nothing in this path alters the signal before capture.`,
       })
     );
   }
@@ -1632,7 +1643,9 @@ function nudgeUtc(prefix, minutes, announce) {
   asUtc.setUTCMinutes(asUtc.getUTCMinutes() + minutes);
   const iso = asUtc.toISOString();
   date.value = iso.slice(0, 10);
-  time.value = iso.slice(11, 19);
+  // hh:mm to match the field's step: the operator never enters seconds, and
+  // every nudge is a whole number of minutes, so they are always :00.
+  time.value = iso.slice(11, 16);
   date.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
