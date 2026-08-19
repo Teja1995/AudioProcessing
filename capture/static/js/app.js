@@ -52,6 +52,12 @@ const STEM_LABELS = {
 };
 
 // Borg CR-10, with the standard verbal anchors. Half steps are allowed.
+//
+// 6, 8 and 9 carry no wording on purpose: the published scale anchors
+// only certain numbers, and the gaps are where a rater places an effort
+// that falls BETWEEN two anchors. Inventing labels for them would change
+// a validated instrument, so the UI derives a muted "between X and Y"
+// hint from the neighbours instead — visibly different from a real anchor.
 const BORG_SCALE = [
   { value: 0, label: "nothing at all" },
   { value: 0.5, label: "extremely weak — just noticeable" },
@@ -2240,6 +2246,31 @@ function tick() {
 // 5b. Borg CR-10. A rating must never be the reason a session stops.
 // ---------------------------------------------------------------------------
 
+// The nearest worded anchors on either side of an unlabelled step, so a
+// blank row reads as "between these two" rather than as a broken screen.
+// Derived rather than hardcoded, so editing BORG_SCALE cannot desynchronise
+// the hints from the anchors.
+function borgBetween(index) {
+  let below = null;
+  let above = null;
+  for (let i = index - 1; i >= 0; i--) {
+    if (BORG_SCALE[i].label) {
+      below = BORG_SCALE[i].label;
+      break;
+    }
+  }
+  for (let i = index + 1; i < BORG_SCALE.length; i++) {
+    if (BORG_SCALE[i].label) {
+      above = BORG_SCALE[i].label;
+      break;
+    }
+  }
+  if (below && above) return `between ${below} and ${above}`;
+  if (below) return `above ${below}`;
+  if (above) return `below ${above}`;
+  return "";
+}
+
 function renderBorg() {
   const pending = app.pendingBorg;
   if (!pending) return;
@@ -2247,22 +2278,26 @@ function renderBorg() {
   const scale = el("borg-scale");
   if (!scale) return;
   clear(scale);
-  for (const step of BORG_SCALE) {
+  BORG_SCALE.forEach(function (step, index) {
+    const anchored = Boolean(step.label);
     scale.append(
       h(
         "button",
         {
-          class: "btn",
+          class: "btn borg-step" + (anchored ? "" : " borg-unanchored"),
           type: "button",
           onclick: function () {
             submitBorg(step.value);
           },
         },
         h("span", { class: "num", text: String(step.value) }),
-        step.label
+        h("span", {
+          class: anchored ? "borg-label" : "borg-label borg-hint",
+          text: anchored ? step.label : borgBetween(index),
+        })
       )
     );
-  }
+  });
 }
 
 async function submitBorg(rating) {

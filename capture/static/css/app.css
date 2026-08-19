@@ -573,3 +573,18 @@ label.stacked textarea:focus-visible { outline: 3px solid var(--accent); outline
 .mic-select:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
 .mic-select:disabled { opacity: 0.5; cursor: not-allowed; }
 .mic-select option:disabled { color: var(--muted); }
+
+/* Borg CR-10. The published scale words only some numbers; 6, 8 and 9 are
+   deliberately blank so a rater can place an effort between two anchors.
+   The derived "between …" text must never be mistaken for a real anchor, so
+   it is muted and italic while the anchors stay full strength. */
+.borg-step { justify-content: flex-start; gap: 1rem; text-align: left; }
+.borg-label { flex: 1 1 auto; }
+.borg-hint {
+  color: var(--muted);
+  font-style: italic;
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+.borg-unanchored { border-style: dashed; }
+.borg-unanchored:hover { border-style: solid; }
