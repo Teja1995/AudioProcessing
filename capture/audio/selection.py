@@ -414,7 +414,8 @@ _MME_NAME_LIMIT: Final = 31
 # microphones, and recording through one means not knowing what was recorded.
 _VIRTUAL_NAME_HINTS: Final[tuple[str, ...]] = (
     "sound mapper",
-    "primary sound capture",
+    "primary sound capture",  # DirectSound's virtual default input
+    "primary sound driver",  # ...and its virtual default output
 )
 
 # WDM-KS exposes render (speaker) pins as inputs too. They are loopback
@@ -747,3 +748,133 @@ def resolve_playback_device() -> int | None:
         selected["host_api"],
     )
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class OutputGroup:
+    """One physical speaker, with every host-API path it offers."""
+
+    key: str
+    name: str
+    paths: tuple[OutputDevice, ...]
+    best: OutputDevice
+    is_selected: bool
+    is_os_default: bool
+
+    @property
+    def offer_by_default(self) -> bool:
+        """Shown without asking for the full list.
+
+        Excluded: the recording microphone's own headphone jack, virtual
+        routers that hide what actually played, and Windows' unnamed WDM-KS
+        pins, which say nothing about where the sound would come out.
+        """
+        if self.best.is_microphone_monitor:
+            return False
+        if _is_virtual(self.best.name):
+            return False
+        return bool(_endpoint_family(self.best.name))
+
+
+def friendly_name(name: str) -> str:
+    r"""A name an operator can read.
+
+    Windows exposes some endpoints by their driver path, e.g.
+    "Output (@System32\drivers\bthhfenum.sys,#4;%1 Hands-Free HF Audio%0;
+    (moto g32))". The useful part is the device in the final brackets.
+    """
+    stripped = name.strip()
+    if "bthhfenum" in stripped.lower():
+        if stripped.endswith("))") and ";(" in stripped:
+            device = stripped[stripped.rindex(";(") + 2 : -2].strip()
+            if device:
+                return f"Bluetooth: {device}"
+        return "Bluetooth audio device"
+    return stripped
+
+
+def _output_rank(device: OutputDevice) -> tuple[int, int, str]:
+    try:
+        api_rank = HOST_API_PREFERENCE.index(device.host_api)
+    except ValueError:
+        api_rank = len(HOST_API_PREFERENCE)
+    # Prefer a path that names a real endpoint over an anonymous one.
+    return (0 if _endpoint_family(device.name) else 1, api_rank, device.name.lower())
+
+
+def group_outputs(devices: list[OutputDevice]) -> list[OutputGroup]:
+    """Collapse host-API aliases into one entry per real speaker.
+
+    Same problem as the microphone list: PortAudio reports every output once
+    per host API, so two speakers become eighteen rows. Grouping is by the
+    bracketed device name, which is what identifies the physical box, with
+    anonymous WDM-KS pins ("Headphones ()", "Output 1 (AudioMiniport …)")
+    falling into their own buckets rather than merging into one another.
+    """
+    buckets: dict[str, list[OutputDevice]] = {}
+    for device in devices:
+        family = _endpoint_family(device.name)
+        key = family or device.name.strip().lower()[:_MME_NAME_LIMIT]
+        # "cirrus logic high def" (MME, truncated) and "cirrus logic high
+        # definition au" (WASAPI) are the same speaker, so match on prefix
+        # rather than equality and keep the longer name as the bucket key.
+        match = next(
+            (
+                existing
+                for existing in buckets
+                if existing.startswith(key) or key.startswith(existing)
+            ),
+            None,
+        )
+        if match is None:
+            buckets[key] = [device]
+        else:
+            buckets[match].append(device)
+            if len(key) > len(match):
+                buckets[key] = buckets.pop(match)
+
+    groups: list[OutputGroup] = []
+    for key, members in buckets.items():
+        ordered = tuple(sorted(members, key=_output_rank))
+        best = ordered[0]
+        name = max((d.name for d in ordered), key=len)
+        groups.append(
+            OutputGroup(
+                key=key,
+                name=name,
+                paths=ordered,
+                best=best,
+                is_selected=any(d.is_selected for d in ordered),
+                is_os_default=any(d.is_os_default for d in ordered),
+            )
+        )
+
+    groups.sort(
+        key=lambda g: (
+            not g.offer_by_default,
+            not g.is_selected,
+            not g.best.recommended,
+            g.name.lower(),
+        )
+    )
+    return groups
+
+
+def output_groups_as_dicts(groups: list[OutputGroup]) -> list[dict[str, Any]]:
+    return [
+        {
+            "key": g.key,
+            "name": friendly_name(g.name),
+            "raw_name": g.name,
+            "index": g.best.index,
+            "host_api": g.best.host_api,
+            "is_selected": g.is_selected,
+            "is_os_default": g.is_os_default,
+            "is_microphone_monitor": g.best.is_microphone_monitor,
+            "recommended": g.best.recommended,
+            "warnings": list(g.best.warnings),
+            "offer_by_default": g.offer_by_default,
+            "path_count": len(g.paths),
+        }
+        for g in groups
+    ]

@@ -214,7 +214,11 @@ async def list_outputs() -> dict[str, object]:
         found = selection.list_output_devices(refresh=not service.has_active)
     except DeviceError as exc:
         raise _device_http(exc) from exc
+    groups = selection.group_outputs(found)
     return {
+        # One entry per real speaker; host-API aliases collapsed, exactly as
+        # the microphone list does.
+        "groups": selection.output_groups_as_dicts(groups),
         "devices": selection.outputs_as_dicts(found),
         "selected": selection.load_output_selection(),
         "session_active": service.has_active,

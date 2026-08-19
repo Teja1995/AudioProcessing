@@ -1070,17 +1070,19 @@ async function loadSpeakerPicker() {
     return;
   }
 
-  const devices = asArray(data.devices);
+  // Grouped: PortAudio reports every speaker once per host API, so two
+  // speakers become eighteen rows. The server collapses the aliases and
+  // holds back the microphone's own headphone jack and virtual routers.
+  const groups = asArray(data.groups);
+  const ordered = groups.filter(function (g) {
+    return g.offer_by_default === true;
+  });
+  const hidden = groups.length - ordered.length;
   clear(block);
-  if (!devices.length) {
-    block.append(h("p", { class: "error", text: "No output device found at all." }));
+  if (!ordered.length) {
+    block.append(h("p", { class: "error", text: "No speaker found that could play the tone." }));
     return;
   }
-
-  const ordered = devices.slice().sort(function (a, b) {
-    if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
-    return String(a.name).localeCompare(String(b.name));
-  });
 
   const select = h("select", { class: "mic-select", id: "speaker-select" });
   let active = null;
@@ -1130,6 +1132,18 @@ async function loadSpeakerPicker() {
         class: "ok-note",
         text: `The reference tone will play through ${effective.name}.` +
           (active ? "" : " (Windows' default — choose one to be sure.)"),
+      })
+    );
+  }
+
+  if (hidden > 0) {
+    block.append(
+      h("p", {
+        class: "hint",
+        text:
+          `${hidden} output${hidden === 1 ? "" : "s"} not shown: the ` +
+          "microphone's own headphone jack, and virtual routers that hide " +
+          "which device actually played.",
       })
     );
   }
