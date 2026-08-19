@@ -47,15 +47,24 @@ def _require_file(path: Path, what: str) -> None:
 
 
 def play_wav(path: Path) -> None:
-    """Blocking playback of a vendored WAV through the default output.
+    """Play a vendored WAV through the operator's chosen speaker, blocking.
 
     Plays at the file's own sample rate - no resampling, no gain, no
     processing of any kind. Called from asyncio.to_thread, so blocking here
     is intended.
 
-    PortAudio errors (no output device, rate unsupported) propagate
-    unchanged: sounddevice's own message names the real cause, and wrapping
-    it would only hide that from whoever reads the log at 3am.
+    Uses an explicit, scoped OutputStream rather than ``sd.play()``. That
+    convenience keeps a MODULE-LEVEL stream alive between calls and tears the
+    previous one down on the next call, so a tone played from the start
+    screen was still holding global state when task 2 tried to play during a
+    live session. The result was a PortAudio failure that named the CAPTURE
+    format ("IsFormatSupported(capture) failed") while opening an output --
+    baffling to read, and it killed a session in the field. A stream created
+    and closed inside this function shares nothing with anything else.
+
+    PortAudio errors propagate unchanged: sounddevice's own message names the
+    real cause, and SessionService converts them into a recoverable
+    PlaybackError so a speaker problem never ends a session.
     """
     _require_file(path, "Playback asset")
     # The operator's chosen speaker. Windows adopts a USB microphone's own
@@ -65,10 +74,27 @@ def play_wav(path: Path) -> None:
     from capture.audio.selection import resolve_playback_device
 
     device = resolve_playback_device()
-    data, samplerate = sf.read(path, dtype="float32", always_2d=False)
     # float32 holds a 24-bit sample exactly, so this is a faithful copy of
     # the vendored file, not a re-render of it.
-    sd.play(data, samplerate=samplerate, device=device, blocking=True)
+    data, samplerate = sf.read(path, dtype="float32", always_2d=True)
+    channels = int(data.shape[1])
+
+    stream = sd.OutputStream(
+        device=device,
+        samplerate=samplerate,
+        channels=channels,
+        dtype="float32",
+    )
+    stream.start()
+    try:
+        stream.write(data)
+    finally:
+        # Closed on every path, so a failed or interrupted playback cannot
+        # leave a device claimed for the rest of the session.
+        try:
+            stream.stop()
+        finally:
+            stream.close()
 
 
 def reference_tone_duration_s() -> float:

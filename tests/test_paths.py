@@ -113,5 +113,47 @@ class CloudSyncDetectionTests(unittest.TestCase):
         self.assertIsNone(cloud_sync_warning(Path(r"C:\work\my-dropbox-notes\data")))
 
 
+
+
+class TakeAudioPathGuardTests(unittest.TestCase):
+    """The listen-back endpoint serves files by name from a session folder.
+
+    A crafted name must not be able to walk out of that folder, and only
+    finished takes may be served: meta.json, the master log, and anything
+    outside the session are all off limits.
+    """
+
+    def _served(self, session_dir: Path, filename: str) -> bool:
+        # Exactly the guard in routes.session.take_audio.
+        candidate = (session_dir / filename).resolve()
+        directory = session_dir.resolve()
+        return directory in candidate.parents and candidate.suffix.lower() == ".wav"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.session = Path(self._tmp.name) / "P01" / "001_20260822T073000Z"
+        self.session.mkdir(parents=True)
+
+    def test_a_normal_take_is_served(self) -> None:
+        self.assertTrue(self._served(self.session, "03_sustained_a_take1.wav"))
+
+    def test_parent_traversal_is_refused(self) -> None:
+        for name in ("../../master_log.csv", r"..\..\master_log.csv", "../../../secrets.wav"):
+            self.assertFalse(self._served(self.session, name), name)
+
+    def test_absolute_paths_are_refused(self) -> None:
+        for name in ("C:/Windows/win.ini", "/etc/passwd"):
+            self.assertFalse(self._served(self.session, name), name)
+
+    def test_non_wav_files_in_the_session_are_refused(self) -> None:
+        # meta.json lives right next to the takes and must not be servable.
+        for name in ("meta.json", "01_silence.wav.partial"):
+            self.assertFalse(self._served(self.session, name), name)
+
+    def test_a_path_that_normalises_back_inside_is_allowed(self) -> None:
+        self.assertTrue(self._served(self.session, "sub/../01_silence.wav"))
+
+
 if __name__ == "__main__":
     unittest.main()

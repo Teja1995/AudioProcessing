@@ -347,3 +347,64 @@ class StreamInterlockTests(unittest.TestCase):
         with mock.patch.object(selection.sd, "_terminate") as terminate:
             selection.list_output_devices(refresh=False)
         terminate.assert_not_called()
+
+
+def output(index=12, name="Speakers (Cirrus Logic High Definition Audio)",
+           host_api="Windows WASAPI", monitor=False):
+    return selection.OutputDevice(
+        index=index, name=name, host_api=host_api, max_output_channels=2,
+        default_samplerate=48000.0, is_os_default=False, is_selected=False,
+        is_microphone_monitor=monitor,
+        warnings=("This is the microphone's own headphone output, not a "
+                  "speaker in the room.",) if monitor else (),
+    )
+
+
+class OutputRankingTests(unittest.TestCase):
+    """Playback ranking is the OPPOSITE of capture ranking. For capture the
+    mixer's resampling corrupts the data, so the direct pin wins; for
+    playback the recording of the acoustic result IS the data, and the
+    exclusive WDM-KS pin collides with the open capture stream — one such
+    collision killed a session mid-take."""
+
+    def test_wasapi_is_preferred_over_the_exclusive_kernel_pin(self) -> None:
+        groups = selection.group_outputs([
+            output(index=31, host_api="Windows WDM-KS"),
+            output(index=12, host_api="Windows WASAPI"),
+        ])
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].best.host_api, "Windows WASAPI")
+
+    def test_a_wdm_ks_only_speaker_is_not_offered(self) -> None:
+        groups = selection.group_outputs([
+            output(index=23, name="Output 1 (AudioMiniport Wave Speaker)",
+                   host_api="Windows WDM-KS"),
+        ])
+        self.assertFalse(groups[0].offer_by_default)
+
+    def test_the_microphones_monitor_is_still_not_offered(self) -> None:
+        groups = selection.group_outputs([
+            output(index=12, name="Speakers (Yeti Stereo Microphone)", monitor=True),
+        ])
+        self.assertFalse(groups[0].offer_by_default)
+
+    def test_a_real_speaker_on_a_shared_api_is_offered(self) -> None:
+        groups = selection.group_outputs([output()])
+        self.assertTrue(groups[0].offer_by_default)
+
+
+class PlaybackErrorMappingTests(unittest.TestCase):
+    """A failed tone must abort the take and surface as a recoverable 409 —
+    a 500 here once wedged a whole session behind the fatal overlay."""
+
+    def test_playback_error_maps_to_409(self) -> None:
+        from fastapi import HTTPException
+
+        from capture.errors import PlaybackError
+        from capture.routes.session import http_errors
+
+        with self.assertRaises(HTTPException) as caught:
+            with http_errors():
+                raise PlaybackError("The reference tone could not be played.")
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("reference tone", caught.exception.detail)

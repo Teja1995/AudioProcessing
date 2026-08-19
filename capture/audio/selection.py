@@ -812,6 +812,12 @@ class OutputGroup:
             return False
         if _is_virtual(self.best.name):
             return False
+        if self.best.host_api == "Windows WDM-KS":
+            # A speaker whose ONLY route is an exclusive kernel pin. Opening
+            # it can collide with the recording stream; every real speaker is
+            # also reachable through WASAPI or MME, so a WDM-KS-only entry is
+            # a duplicate pin, not a device the operator needs.
+            return False
         return bool(_endpoint_family(self.best.name))
 
 
@@ -832,11 +838,29 @@ def friendly_name(name: str) -> str:
     return stripped
 
 
+# Playback ranking is the OPPOSITE of capture ranking, deliberately.
+#
+# For capture, the mixer's resampling corrupts the measurement, so the
+# direct pin (WDM-KS) wins. For playback nothing scientific rides on the
+# path: the fixed tone leaves a speaker and the MICROPHONE records the
+# acoustic result — that recording is the data, whatever route the tone took.
+# What matters instead is that playback must not fight the recording:
+# WDM-KS pins are exclusive kernel objects that collide with the open
+# capture stream and with other audio, and one such collision killed a
+# session in the field ("IsFormatSupported(capture) failed" mid-take).
+OUTPUT_HOST_API_PREFERENCE: Final[tuple[str, ...]] = (
+    "Windows WASAPI",
+    "Windows DirectSound",
+    "MME",
+    "Windows WDM-KS",
+)
+
+
 def _output_rank(device: OutputDevice) -> tuple[int, int, str]:
     try:
-        api_rank = HOST_API_PREFERENCE.index(device.host_api)
+        api_rank = OUTPUT_HOST_API_PREFERENCE.index(device.host_api)
     except ValueError:
-        api_rank = len(HOST_API_PREFERENCE)
+        api_rank = len(OUTPUT_HOST_API_PREFERENCE)
     # Prefer a path that names a real endpoint over an anonymous one.
     return (0 if _endpoint_family(device.name) else 1, api_rank, device.name.lower())
 

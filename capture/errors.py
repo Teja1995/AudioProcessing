@@ -31,3 +31,13 @@ class DeviceError(SessionFatalError):
 
 class StorageWriteError(SessionFatalError):
     """A take could not be written or finalized on disk."""
+
+
+class PlaybackError(CaptureError):
+    """The reference tone or a demo could not be played.
+
+    Deliberately NOT a SessionFatalError: the microphone and the recording
+    path are fine, so the right outcome is "this take was aborted, fix the
+    speaker, press start again" — never a dead session. A session died in the
+    field because this case was left to a generic 500.
+    """

@@ -33,7 +33,7 @@ from capture.domain.models import (
 )
 from capture.domain.state import IllegalTransition, Phase, SessionStateMachine
 from capture.domain.tasks import BY_NUMBER
-from capture.errors import SessionFatalError
+from capture.errors import PlaybackError, SessionFatalError
 from capture.storage import metadata, paths
 from capture.ws.hub import hub
 
@@ -298,6 +298,51 @@ class SessionService:
             "ended_after_failure": ended_after_failure,
         }
 
+    def abort_session(self, session_id: str) -> dict[str, Any]:
+        """Abandon a session from ANY phase, keeping everything recorded.
+
+        Distinct from complete_session(), which is the tidy end of a finished
+        battery. This is the escape hatch: a participant walks out, the
+        speaker is wrong, the wrong person is at the laptop, or a screen has
+        wedged. Being unable to leave a screen is itself a way to lose a
+        session, so every phase must have an exit.
+
+        Nothing recorded is discarded. Completed takes are already final on
+        disk and in both ledgers; an in-flight take is aborted and keeps its
+        .partial name, so it can never be mistaken for data.
+        """
+        session = self.require_session(session_id, allow_fatal=True)
+        self._cancel_watchdog()
+        recorded = len(session.meta.takes)
+
+        # Stop any take in flight FIRST: the writer must not be handed more
+        # blocks while the stream is being torn down.
+        try:
+            session.engine.abort_take()
+        except Exception:  # noqa: BLE001 — abandoning; log and keep going
+            log.exception("Error aborting the in-flight take during abort")
+        session.state.abort_take()
+
+        metadata.write_meta(session.meta)
+        try:
+            session.engine.close()
+        except Exception:  # noqa: BLE001 — the device is being released
+            log.exception("Error closing the engine during abort")
+        self._active = None
+
+        log.warning(
+            "Session %s ABORTED by the operator after %d completed take(s)",
+            session_id,
+            recorded,
+        )
+        self._broadcast({"type": "task_state", "phase": "aborted"})
+        return {
+            "session_id": session_id,
+            "aborted": True,
+            "takes_kept": recorded,
+            "participant": session.participant,
+        }
+
     def abandon_active_session(self) -> None:
         """Shutdown path: release the device. Completed takes are already
         safe on disk — nothing here can undo them."""
@@ -350,7 +395,28 @@ class SessionService:
 
         # Auto-stop tasks finish on their own; manual tasks get a watchdog.
         if slot.task.key == "reference_tone":
-            await asyncio.to_thread(playback.play_wav, config.REFERENCE_TONE_WAV)
+            try:
+                await asyncio.to_thread(playback.play_wav, config.REFERENCE_TONE_WAV)
+            except Exception as exc:  # noqa: BLE001 — converted, never swallowed
+                # The tone could not be played, so nothing worth keeping was
+                # recorded — but the take is ARMED and the writer is writing.
+                # Left like this, the session is wedged: the take state blocks
+                # every further action, complete_session refuses because the
+                # phase is wrong, and the writer fills a .partial until the
+                # process dies (73 MB in one real incident). Abort the take,
+                # return this slot to idle, and tell the operator what to fix.
+                log.exception("Reference tone playback failed; aborting the take")
+                session.engine.abort_take()
+                session.state.abort_take()
+                session.current_take_path = None
+                self._push_state()
+                raise PlaybackError(
+                    "The reference tone could not be played through the "
+                    "selected speaker, so this take was stopped and nothing "
+                    "was kept. The microphone is fine. Check the speaker on "
+                    "the start screen (or choose a different one), then press "
+                    f"start again. Technical detail: {exc}"
+                ) from exc
             return await self.stop_take(session_id)
         if slot.task.target_s is not None and slot.task.stop.value == "auto":
             await asyncio.sleep(slot.task.target_s)
@@ -481,6 +547,15 @@ class SessionService:
             "file": record.filename,
             "duration_s": record.duration_s,
             "qc": qc_to_dict(qc),
+            # Which slot this was, so the task screen can offer "re-record
+            # this take" without the browser having to work it out. The state
+            # snapshot has already advanced to the NEXT slot by now, so the
+            # browser could not derive this correctly on its own.
+            "slot": {
+                "task_number": slot.task.number,
+                "stem": slot.stem,
+                "take_n": slot.take_n,
+            },
         }
 
     async def redo_take(

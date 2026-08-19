@@ -12,7 +12,15 @@
 <header class="topbar">
   <h1>Voice Capture</h1>
   <p id="session-badge" class="badge" hidden></p>
-  <nav><a href="/dashboard">Adherence dashboard</a></nav>
+  <nav>
+    <!-- Always reachable. A screen with no way out is itself a way to lose a
+         session: the operator gets stuck, the participant waits, and the slot
+         is missed. Completed takes are never discarded by this. -->
+    <button id="abort-session" class="btn btn-small btn-danger-quiet" type="button" hidden>
+      Abort session
+    </button>
+    <a href="/dashboard">Adherence dashboard</a>
+  </nav>
 </header>
 
 <!-- Loud, non-dismissable notices (connection lost, path collision).
@@ -274,6 +282,11 @@
     <p id="task-shape" class="task-shape"></p>
     <div id="task-passage" class="passage"></div>
     <div id="task-demo" class="demo"></div>
+    <!-- Only rendered for tasks that play audio (the reference tone, and the
+         consonant examples). Getting the speaker wrong here is invisible: the
+         tone plays somewhere nobody is listening and the take records
+         silence, so the fix belongs on the screen where it goes wrong. -->
+    <div id="task-speaker" class="task-speaker" hidden></div>
 
     <div class="take-controls">
       <button id="take-button" class="btn btn-record" type="button">Start recording</button>
@@ -281,6 +294,10 @@
     </div>
 
     <p id="take-result" class="take-result" hidden></p>
+    <!-- Listen back and re-record without waiting for the quick-check
+         list: the participant is still at the microphone, at the same
+         distance, so a retake is comparable with the original. -->
+    <div id="take-review" class="task-speaker" hidden></div>
     <p id="task-error" class="error" hidden></p>
     <div id="task-redo" class="redo-note"></div>
   </section>

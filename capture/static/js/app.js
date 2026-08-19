@@ -444,6 +444,181 @@ async function onFatalEndSession() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Abort: leave any screen, from any phase.
+//
+// The reference-tone screen once trapped an operator entirely: playback
+// failed, the take could not start, and no control moved forward or back.
+// Being unable to leave is its own way to lose a session, so this is always
+// available and always works. Completed takes are never discarded.
+// ---------------------------------------------------------------------------
+
+// The exit is offered whenever a session is open, on every screen, and
+// while the fatal overlay is up. It is the only control that is never
+// conditional on the phase.
+function renderAbortControl() {
+  const button = el("abort-session");
+  if (!button) return;
+  button.hidden = !app.sessionId;
+}
+
+async function onAbortSession() {
+  const button = el("abort-session");
+  if (!app.sessionId) {
+    // No session open: just return to the start screen.
+    forgetSession();
+    app.localStep = "start";
+    app.startLoaded = false;
+    render();
+    return;
+  }
+  const takes = (app.snapshot && app.snapshot.slot_index) || 0;
+  const sure = window.confirm(
+    "Abort this session?\n\n" +
+      `Everything already recorded is KEPT (${takes} take${takes === 1 ? "" : "s"} so far) ` +
+      "and stays in the session folder and the logs.\n\n" +
+      "The microphone is released and you return to the start screen. " +
+      "You can begin a fresh session for this participant afterwards."
+  );
+  if (!sure) return;
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Aborting…";
+  }
+  try {
+    const data = await api("POST", `/api/sessions/${encodeURIComponent(app.sessionId)}/abort`);
+    app.fatal = null;
+    const overlay = el("fatal");
+    if (overlay) overlay.hidden = true;
+    app.abortInfo = data && typeof data === "object" ? data : {};
+    forgetSession();
+    app.localStep = "start";
+    app.startLoaded = false;
+    render();
+  } catch (err) {
+    window.alert(
+      `The session was NOT aborted: ${err.message}\n\n` +
+        "Every completed take is still safe on disk. If this keeps failing, " +
+        "restart the capture application — that also releases the microphone."
+    );
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Abort session";
+    }
+  }
+}
+
+// The speaker chooser, repeated on the task screen for tasks that play audio.
+// A wrong speaker here is silent: the tone plays where nobody hears it and
+// the take records room silence, so it must be fixable without leaving.
+// render() runs on every WebSocket push, so this can be entered again while
+// an earlier call is still awaiting the server. Each call cleared the
+// container BEFORE its await and appended AFTER it, so overlapping calls
+// stacked duplicate controls. The token lets a superseded render bail, and
+// the container is cleared again after the await rather than before it.
+let taskSpeakerToken = 0;
+
+async function renderTaskSpeaker(task) {
+  const host = el("task-speaker");
+  if (!host) return;
+  const playsAudio = task && (task.key === "reference_tone" || task.spoken_demo === true);
+  const token = ++taskSpeakerToken;
+
+  if (!playsAudio) {
+    host.hidden = true;
+    clear(host);
+    return;
+  }
+
+  let data;
+  try {
+    data = await api("GET", "/api/devices/outputs");
+  } catch (err) {
+    if (token !== taskSpeakerToken) return;
+    host.hidden = false;
+    clear(host);
+    host.append(
+      h("h3", { text: "Speaker" }),
+      h("p", { class: "error", text: `Cannot read the speaker list: ${err.message}` })
+    );
+    return;
+  }
+
+  // A newer render started while we were waiting; it owns the container now.
+  if (token !== taskSpeakerToken) return;
+  host.hidden = false;
+  clear(host);
+  host.append(h("h3", { text: "Speaker" }));
+  const status = h("p", { class: "hint" });
+  host.append(status);
+
+  const offered = asArray(data.groups).filter(function (g) {
+    return g.offer_by_default === true;
+  });
+  if (!offered.length) {
+    status.className = "error";
+    status.textContent = "No usable speaker found.";
+    return;
+  }
+
+  const select = h("select", { class: "mic-select" });
+  let active = null;
+  for (const g of offered) {
+    select.append(
+      h("option", {
+        value: String(g.index),
+        selected: g.is_selected === true,
+        text: `${g.name} — ${g.host_api}`,
+      })
+    );
+    if (g.is_selected) active = g;
+  }
+  select.addEventListener("change", async function () {
+    status.className = "hint";
+    status.textContent = "Selecting…";
+    try {
+      await api("POST", "/api/devices/select-output", { index: Number(select.value) });
+      await renderTaskSpeaker(task);
+    } catch (err) {
+      status.className = "error";
+      status.textContent = `Could not select that speaker: ${err.message}`;
+    }
+  });
+
+  status.className = "hint";
+  status.textContent = active
+    ? `The tone plays through ${active.name}.`
+    : "No speaker chosen — Windows' default will be used.";
+
+  const test = h(
+    "button",
+    {
+      class: "btn btn-quiet btn-small",
+      type: "button",
+      onclick: async function () {
+        test.disabled = true;
+        status.className = "hint";
+        status.textContent = "Playing a test tone…";
+        try {
+          const r = await api("POST", "/api/devices/test-tone");
+          status.className = "ok-note";
+          status.textContent = `Played through ${r.played_through}. If you heard nothing, choose another speaker.`;
+        } catch (err) {
+          status.className = "error";
+          status.textContent = `Could not play the tone: ${err.message}`;
+        } finally {
+          test.disabled = false;
+        }
+      },
+    },
+    "Test this speaker"
+  );
+  host.append(select, h("div", { class: "row-actions row-actions-left" }, test));
+}
+
 // ---------------------------------------------------------------------------
 // Level meter. Driven entirely by numbers the server sends.
 // ---------------------------------------------------------------------------
@@ -669,6 +844,7 @@ function render() {
   }
 
   renderBadge();
+  renderAbortControl();
 
   if (screen === "consent") renderConsent();
   else if (screen === "setup") renderSetup();
@@ -781,7 +957,13 @@ async function loadSummary() {
   }
 }
 
+// Generation token: an overlapping call clears the container before its
+// await and appends after it, so a superseded render must bail rather
+// than append a second copy of everything.
+let devicesToken = 0;
+
 async function loadDevices() {
+  const _t = ++devicesToken;
   const block = el("device-block");
   if (!block) return;
   clear(block);
@@ -789,6 +971,7 @@ async function loadDevices() {
   let data;
   try {
     data = await api("GET", "/api/devices");
+    if (_t !== devicesToken) return;
   } catch (err) {
     clear(block);
     block.append(
@@ -895,7 +1078,13 @@ async function loadDevices() {
 // warnings rendered here, so the operator sees the problem BEFORE recording
 // rather than discovering it in the audio afterwards.
 
+// Generation token: an overlapping call clears the container before its
+// await and appends after it, so a superseded render must bail rather
+// than append a second copy of everything.
+let micPickerToken = 0;
+
 async function loadMicPicker() {
+  const _t = ++micPickerToken;
   const block = el("mic-picker");
   if (!block) return;
   clear(block);
@@ -904,6 +1093,7 @@ async function loadMicPicker() {
   let data;
   try {
     data = await api("GET", "/api/devices/inputs");
+    if (_t !== micPickerToken) return;
   } catch (err) {
     clear(block);
     block.append(
@@ -1052,7 +1242,13 @@ async function loadMicPicker() {
 // wearing, the calibration take records room silence, and it still looks
 // like a completed task. The server flags those endpoints; this refuses to
 // let one be chosen quietly.
+// Generation token: an overlapping call clears the container before its
+// await and appends after it, so a superseded render must bail rather
+// than append a second copy of everything.
+let speakerPickerToken = 0;
+
 async function loadSpeakerPicker() {
+  const _t = ++speakerPickerToken;
   const block = el("speaker-picker");
   if (!block) return;
   clear(block);
@@ -1061,6 +1257,7 @@ async function loadSpeakerPicker() {
   let data;
   try {
     data = await api("GET", "/api/devices/outputs");
+    if (_t !== speakerPickerToken) return;
   } catch (err) {
     clear(block);
     block.append(
@@ -1377,7 +1574,13 @@ function renderChecklist(deviceName, status, items) {
   renderPicker();
 }
 
+// Generation token: an overlapping call clears the container before its
+// await and appends after it, so a superseded render must bail rather
+// than append a second copy of everything.
+let participantsToken = 0;
+
 async function loadParticipants() {
+  const _t = ++participantsToken;
   const block = el("participant-block");
   if (!block) return;
   clear(block);
@@ -1385,6 +1588,7 @@ async function loadParticipants() {
   let data;
   try {
     data = await api("GET", "/api/participants");
+    if (_t !== participantsToken) return;
   } catch (err) {
     clear(block);
     block.append(
@@ -1676,9 +1880,7 @@ async function removeParticipant(participant, hasRecordings) {
   const block = el("participant-block");
   if (hasRecordings) {
     window.alert(
-      `${participant.pseudonym} already has recorded sessions.
-
-` +
+      `${participant.pseudonym} already has recorded sessions.\n\n` +
         "Use Withdraw on the adherence dashboard instead. That deletes their " +
         "audio and metadata as well, and records that the withdrawal " +
         "happened — removing only the name here would leave the recordings " +
@@ -1687,9 +1889,7 @@ async function removeParticipant(participant, hasRecordings) {
     return;
   }
   const sure = window.confirm(
-    `Remove ${participant.pseudonym} from the participant list?
-
-` +
+    `Remove ${participant.pseudonym} from the participant list?\n\n` +
       "They have no recordings, so this only clears the pseudonym and any " +
       "consent record. It cannot be undone, but nothing is lost."
   );
@@ -2234,6 +2434,8 @@ function renderTask() {
   setText("task-shape", shapeLine(task));
   renderPassage(task);
   renderDemo(task, snapshot.take_state === "recording");
+  // Only for tasks that play audio; the function hides itself otherwise.
+  renderTaskSpeaker(task);
   renderTakeResult();
   renderRedoNote(snapshot);
 
@@ -2402,6 +2604,94 @@ function renderTakeResult() {
   if (Number.isFinite(result.duration_s)) parts.push(`${fmt(result.duration_s)} s`);
   parts.push(warned ? `FLAGGED: ${warnings.join("; ") || "see the quick check"}` : "passed the quick check");
   node.textContent = parts.join(" · ");
+  renderTakeReview(result);
+}
+
+// Listen back to the take that was just saved, and re-record it on the spot.
+//
+// Waiting for the quick-check list at the end is too late in practice: by
+// then the participant may have moved, changed distance, or left. Judging it
+// here means the retake happens under the same conditions as the original,
+// which is the only way a comparison between them means anything.
+//
+// Playing audio in the BROWSER is safe here in a way that recording never
+// would be. This is monitoring an existing file; it touches no microphone
+// and no capture path.
+function renderTakeReview(result) {
+  const host = el("take-review");
+  if (!host) return;
+  clear(host);
+
+  const file = result && result.file;
+  const slot = result && result.slot;
+  if (!file || !app.sessionId) {
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+
+  const src =
+    `/api/sessions/${encodeURIComponent(app.sessionId)}` +
+    `/takes/${encodeURIComponent(file)}/audio`;
+  const player = h("audio", { controls: true, preload: "none", src: src, class: "take-audio" });
+  const status = h("p", { class: "hint", hidden: true });
+
+  host.append(
+    h("h3", { text: "Check this take" }),
+    h("p", {
+      class: "hint",
+      text:
+        "Listen before moving on. If the participant or you are not happy " +
+        "with it, re-record now — nothing is ever overwritten, so the " +
+        "first attempt is kept either way.",
+    }),
+    player
+  );
+
+  player.addEventListener("error", function () {
+    status.hidden = false;
+    status.className = "error";
+    status.textContent =
+      "Could not load this take for playback. It IS saved on disk — only " +
+      "the preview failed.";
+  });
+
+  // The slot the server reports for the take just saved. Without it there is
+  // nothing safe to re-record, so the control is simply not offered.
+  if (slot && Number.isFinite(slot.task_number)) {
+    const again = h(
+      "button",
+      {
+        class: "btn btn-quiet",
+        type: "button",
+        onclick: async function () {
+          const sure = window.confirm(
+            "Re-record this take?\n\nThe attempt just made is KEPT on disk " +
+              "and stays in the logs. The new recording becomes the one that " +
+              "counts for this slot."
+          );
+          if (!sure) return;
+          again.disabled = true;
+          status.hidden = false;
+          status.className = "hint";
+          status.textContent = "Re-opening this take…";
+          try {
+            player.pause();
+            await redoTake(slot.task_number, slot.stem, slot.take_n);
+          } catch (err) {
+            status.className = "error";
+            status.textContent = `Could not re-record: ${err.message}`;
+          } finally {
+            again.disabled = false;
+          }
+        },
+      },
+      "Re-record this take"
+    );
+    host.append(h("div", { class: "row-actions row-actions-left" }, again), status);
+  } else {
+    host.append(status);
+  }
 }
 
 function renderRedoNote(snapshot) {
@@ -3099,6 +3389,11 @@ function wireCapture() {
   const agree = el("consent-agree");
   if (agree) agree.addEventListener("change", updateConsentSubmit);
   const consentSubmit = el("consent-submit");
+  // Always bound: the exit must work on every screen, including the fatal
+  // overlay, and regardless of which phase the session is in.
+  const abortBtn = el("abort-session");
+  if (abortBtn) abortBtn.addEventListener("click", onAbortSession);
+
   if (consentSubmit) consentSubmit.addEventListener("click", onConsentSubmit);
   const consentBack = el("consent-back");
   if (consentBack) {

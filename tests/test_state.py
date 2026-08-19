@@ -133,8 +133,10 @@ class RedoTests(unittest.TestCase):
         with self.assertRaises(IllegalTransition):
             sm.reopen_for_redo(3, "sustained_a", 99)
 
-    def test_redo_only_from_qc_review(self) -> None:
-        sm = battery_ready()
+    def test_redo_from_the_battery_needs_an_already_recorded_take(self) -> None:
+        # Redo IS allowed mid-battery now, but only backwards: reaching
+        # forward would skip the takes in between and leave holes.
+        sm = battery_ready()  # nothing recorded yet
         with self.assertRaises(IllegalTransition):
             sm.reopen_for_redo(3, "sustained_a", 1)
 
@@ -167,6 +169,72 @@ class SnapshotTests(unittest.TestCase):
             sm.arm_current()
             sm.mark_recording()
             sm.mark_saved()
+
+
+
+
+class InlineRedoTests(unittest.TestCase):
+    """Re-recording a take from the task screen, without waiting for QC
+    review. The participant is still at the microphone, so a retake made
+    there is comparable with the original in a way a later one is not."""
+
+    def _battery_at(self, index: int) -> SessionStateMachine:
+        sm = SessionStateMachine(phase=Phase.TASK_BATTERY)
+        sm.slot_index = index
+        return sm
+
+    def test_redo_returns_to_where_the_battery_was(self) -> None:
+        sm = self._battery_at(4)
+        first = sm.slots[0]
+        sm.reopen_for_redo(first.task.number, first.stem, first.take_n)
+        self.assertEqual(sm.slot_index, 0)
+        self.assertTrue(sm.redo_mode)
+
+        sm.arm_current()
+        sm.mark_recording()
+        sm.mark_saved()
+        # Back where we were, not skipped to the end and not at QC review.
+        self.assertEqual(sm.slot_index, 4)
+        self.assertIs(sm.phase, Phase.TASK_BATTERY)
+        self.assertFalse(sm.redo_mode)
+
+    def test_cannot_redo_a_take_not_yet_recorded(self) -> None:
+        sm = self._battery_at(2)
+        later = sm.slots[5]
+        with self.assertRaises(IllegalTransition):
+            sm.reopen_for_redo(later.task.number, later.stem, later.take_n)
+
+    def test_cannot_redo_the_slot_currently_being_recorded(self) -> None:
+        sm = self._battery_at(2)
+        current = sm.slots[2]
+        sm.arm_current()
+        sm.mark_recording()
+        with self.assertRaises(IllegalTransition):
+            sm.reopen_for_redo(current.task.number, current.stem, current.take_n)
+
+    def test_redo_from_qc_review_still_returns_to_qc_review(self) -> None:
+        sm = SessionStateMachine(phase=Phase.QC_REVIEW)
+        sm.slot_index = len(sm.slots)
+        target = sm.slots[3]
+        sm.reopen_for_redo(target.task.number, target.stem, target.take_n)
+        self.assertIs(sm.phase, Phase.TASK_BATTERY)
+        sm.arm_current()
+        sm.mark_recording()
+        sm.mark_saved()
+        self.assertIs(sm.phase, Phase.QC_REVIEW)
+
+    def test_inline_redo_of_the_last_take_lands_on_qc_review(self) -> None:
+        # The battery had finished; redoing the final take must not leave the
+        # session stranded past the end of the slot list.
+        sm = self._battery_at(len(SessionStateMachine().slots))
+        last = sm.slots[-1]
+        sm.phase = Phase.TASK_BATTERY
+        sm.reopen_for_redo(last.task.number, last.stem, last.take_n)
+        sm.arm_current()
+        sm.mark_recording()
+        sm.mark_saved()
+        self.assertTrue(sm.battery_finished)
+        self.assertIs(sm.phase, Phase.QC_REVIEW)
 
 
 if __name__ == "__main__":

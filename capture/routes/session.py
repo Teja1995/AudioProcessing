@@ -23,12 +23,13 @@ from contextlib import contextmanager
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from capture.domain.models import Covariates, ReferenceMeasures
 from capture.domain.state import IllegalTransition
 from capture.domain.tasks import BY_NUMBER
-from capture.errors import SessionFatalError
+from capture.errors import PlaybackError, SessionFatalError
 from capture.session_service import ActiveSession, service
 from capture.storage import consent_store, participants
 
@@ -61,6 +62,11 @@ def http_errors() -> Iterator[None]:
     try:
         yield
     except IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PlaybackError as exc:
+        # Recoverable: the take was aborted and the slot is idle again. A 409
+        # renders inline and the UI re-syncs; a 500 here once blocked a whole
+        # session behind the fatal overlay for a speaker problem.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except consent_store.ConsentAlreadyRecorded as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -367,6 +373,49 @@ async def qc_summary(sid: str) -> dict[str, object]:
     """Pass/warn list for the QC review screen."""
     with http_errors():
         return service.qc_summary(sid)
+
+
+@router.get("/{sid}/takes/{filename}/audio")
+async def take_audio(sid: str, filename: str) -> FileResponse:
+    """Serve one recorded take so the operator can hear it before moving on.
+
+    Read-only, and confined to the session's own directory. The filename is
+    resolved and checked to be inside that directory, so a crafted name
+    cannot walk out of it. Only finished takes are served: a .partial has no
+    final name, so it can never be requested here.
+
+    Playing the file back in the browser is safe in a way that RECORDING in
+    the browser is not — this is monitoring, and it touches no microphone.
+    """
+    session = service.require_session(sid, allow_fatal=True)
+    candidate = (session.directory / filename).resolve()
+    directory = session.directory.resolve()
+    if directory not in candidate.parents or candidate.suffix.lower() != ".wav":
+        raise HTTPException(
+            status_code=400,
+            detail=f"{filename!r} is not a take in this session.",
+        )
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail=f"No take named {filename}.")
+    return FileResponse(
+        candidate,
+        media_type="audio/wav",
+        # no-store: a redo writes a NEW file, but the operator must never be
+        # played a cached copy of a take they just replaced.
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/{sid}/abort")
+async def abort_session(sid: str) -> dict[str, object]:
+    """Leave a session from any phase, keeping every completed take.
+
+    The escape hatch. complete_session() is for a finished battery and
+    refuses from other phases; this always works, because a screen with no
+    way out is itself a way to lose a session.
+    """
+    with http_errors():
+        return service.abort_session(sid)
 
 
 @router.post("/{sid}/complete")

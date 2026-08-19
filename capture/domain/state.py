@@ -58,9 +58,12 @@ class SessionStateMachine:
     slot_index: int = 0  # index into the planned slot list, battery order
     take_state: TakeState = TakeState.IDLE
     slots: list[TakeSlot] = field(default_factory=lambda: list(iter_slots()))
-    # True while re-recording one specific slot from QC review, so finishing
-    # it returns to QC review instead of replaying the rest of the battery.
+    # True while re-recording one specific slot, so finishing it returns
+    # where it came from instead of replaying the rest of the battery.
     redo_mode: bool = False
+    # Slot to resume at after an inline redo. None means the redo came
+    # from QC review, which is where finishing it returns to.
+    redo_return_index: int | None = None
 
     def transition(self, to: Phase) -> None:
         """Move between phases; anything not in the legal map raises."""
@@ -124,6 +127,15 @@ class SessionStateMachine:
         self.take_state = TakeState.SAVED
         if self.redo_mode:
             self.redo_mode = False
+            resume = self.redo_return_index
+            self.redo_return_index = None
+            if resume is not None:
+                # Inline redo: carry on where the battery was, so re-recording
+                # a take mid-battery does not skip everything after it.
+                self.slot_index = resume
+                if self.battery_finished:
+                    self.transition(Phase.QC_REVIEW)
+                return
             self.transition(Phase.QC_REVIEW)
             return
         self.slot_index += 1
@@ -136,12 +148,39 @@ class SessionStateMachine:
         self.take_state = TakeState.IDLE
 
     def reopen_for_redo(self, task_number: int, stem: str, take_n: int) -> None:
-        """From QC review: reopen one specific slot under a redo suffix."""
-        self.require(Phase.QC_REVIEW)
-        self.slot_index = self.find_slot_index(task_number, stem, take_n)
+        """Reopen one already-recorded slot under a redo suffix.
+
+        Allowed from QC review, and from the battery itself so a take can be
+        re-recorded the moment the operator or participant hears it is wrong
+        (CLAUDE.md: redo any individual take without restarting the session).
+        Catching it there is worth a lot: the participant is still sitting in
+        front of the microphone, at the same distance, in the same state.
+
+        Only a slot that has ALREADY been recorded may be reopened. Reaching
+        forward would skip the takes in between and leave holes.
+        """
+        self.require(Phase.QC_REVIEW, Phase.TASK_BATTERY)
+        target = self.find_slot_index(task_number, stem, take_n)
+
+        if self.phase is Phase.TASK_BATTERY:
+            if self.take_state is TakeState.RECORDING:
+                raise IllegalTransition(
+                    "Stop the current take before re-recording another one"
+                )
+            if target >= self.slot_index:
+                raise IllegalTransition(
+                    "That take has not been recorded yet, so there is nothing "
+                    "to re-record"
+                )
+            # Come back to whichever slot the battery had reached.
+            self.redo_return_index = self.slot_index
+        else:
+            self.redo_return_index = None
+            self.transition(Phase.TASK_BATTERY)
+
+        self.slot_index = target
         self.redo_mode = True
         self.take_state = TakeState.IDLE
-        self.transition(Phase.TASK_BATTERY)
 
     def snapshot(self) -> dict[str, object]:
         """What the browser is told; it renders this, it never derives it."""
