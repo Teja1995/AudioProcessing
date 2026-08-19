@@ -1231,12 +1231,10 @@ function renderPicker() {
     block.append(
       h("p", {
         class: "notice",
-        text:
-          "No participants are configured. Add the pseudonyms to the participants file " +
-          "(data/participants.json) — names never go in there — then reload this list.",
-      }),
-      h("button", { class: "btn btn-quiet", type: "button", onclick: loadParticipants }, "Reload the list")
+        text: "No participants yet. Add the first one below.",
+      })
     );
+    block.append(participantForm());
     return;
   }
 
@@ -1261,7 +1259,11 @@ function renderPicker() {
     }
     if (participant.passage === false) sub.push("no passage set for task 6");
 
-    picker.append(
+    // The chooser and the passage editor sit side by side rather than
+    // nested: a button inside a button is invalid HTML and the inner one
+    // would never receive its own clicks.
+    const cell = h("div", { class: "picker-cell" });
+    cell.append(
       h(
         "button",
         {
@@ -1276,8 +1278,144 @@ function renderPicker() {
         h("span", { class: participant.passage === false ? "sub sub-warn" : "sub", text: sub.join(" · ") })
       )
     );
+    cell.append(
+      h(
+        "button",
+        {
+          class: "btn btn-quiet btn-small",
+          type: "button",
+          onclick: function () {
+            editPassage(participant);
+          },
+        },
+        participant.passage === false ? "Set passage" : "Change passage"
+      )
+    );
+    picker.append(cell);
   }
   block.append(picker);
+  block.append(participantForm());
+}
+
+// ---------------------------------------------------------------------------
+// Add or update a participant from the home screen.
+//
+// The registry stores pseudonyms only: the name-to-pseudonym key lives
+// outside the data directory entirely and is the operator's to keep (GDPR,
+// ARCHITECTURE.md §11). The passage is the fixed connected-speech text for
+// task 6, reused identically every session, so it belongs with the person
+// rather than being retyped.
+
+function participantForm(prefill) {
+  const values = prefill || { pseudonym: "", passage: "" };
+  const wrap = h("div", { class: "card-inset block" });
+  wrap.append(
+    h("h3", { text: values.pseudonym ? `Passage for ${values.pseudonym}` : "Add a participant" })
+  );
+
+  const idInput = h("input", {
+    type: "text",
+    id: "new-participant-id",
+    autocomplete: "off",
+    spellcheck: "false",
+    placeholder: "e.g. P01",
+    value: values.pseudonym,
+  });
+  const passageInput = h("textarea", {
+    id: "new-participant-passage",
+    rows: "3",
+    spellcheck: "false",
+    placeholder: "The passage this person reads every session, in their own language.",
+  });
+  passageInput.value = values.passage || "";
+
+  if (values.pseudonym) idInput.readOnly = true;
+  const idField = h("label", { class: "stacked" }, "Pseudonym", idInput);
+  const passageField = h(
+    "label",
+    { class: "stacked" },
+    "Connected-speech passage (task 6)",
+    passageInput
+  );
+
+  wrap.append(idField, passageField);
+  wrap.append(
+    h("p", {
+      class: "hint",
+      text:
+        "Pseudonyms only — never a real name. Keep the name-to-pseudonym key " +
+        "separately, away from this laptop's data folder. Leave the passage " +
+        "blank for now if it is not decided yet; it can be added later and an " +
+        "existing passage is never overwritten by a blank one.",
+    })
+  );
+
+  const error = h("p", { class: "error", hidden: true });
+  const save = h(
+    "button",
+    {
+      class: "btn btn-go",
+      type: "button",
+      onclick: function () {
+        saveParticipant(idInput.value, passageInput.value, save, error);
+      },
+    },
+    values.pseudonym ? "Save passage" : "Add participant"
+  );
+  const actions = h("div", { class: "row-actions row-actions-left" }, save);
+  if (values.pseudonym) {
+    actions.append(
+      h("button", { class: "btn btn-quiet", type: "button", onclick: renderPicker }, "Cancel")
+    );
+  }
+  wrap.append(actions, error);
+  return wrap;
+}
+
+async function saveParticipant(pseudonym, passage, button, error) {
+  const id = String(pseudonym || "").trim();
+  error.hidden = true;
+  if (!id) {
+    error.hidden = false;
+    error.textContent = "Enter a pseudonym first.";
+    return;
+  }
+  button.disabled = true;
+  const label = button.textContent;
+  button.textContent = "Saving…";
+  try {
+    // null (not "") means "leave any existing passage alone", so re-adding
+    // someone cannot wipe the text they have been reading all week.
+    const text = String(passage || "").trim();
+    await api("POST", "/api/participants", {
+      pseudonym: id,
+      passage_text: text ? text : null,
+    });
+  } catch (err) {
+    error.hidden = false;
+    error.textContent = `Not saved: ${err.message}`;
+    return;
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+  await loadParticipants();
+}
+
+function editPassage(participant) {
+  const block = el("participant-block");
+  if (!block) return;
+  clear(block);
+  block.append(
+    h("button", { class: "btn btn-quiet", type: "button", onclick: renderPicker }, "Back to the list")
+  );
+  // Pre-fill with what is stored, so an edit is an edit rather than a retype.
+  block.append(
+    participantForm({
+      pseudonym: participant.pseudonym,
+      passage: participant.passageText || "",
+    })
+  );
 }
 
 function choose(participant) {

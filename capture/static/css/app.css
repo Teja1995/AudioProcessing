@@ -497,3 +497,33 @@ table.grid tr.has-gap th.who-col { color: var(--amber); }
   .screen-task h2 { font-size: 1.7rem; }
   .instruction { font-size: 1.3rem; }
 }
+
+/* Participant cell: the chooser plus its own passage control, stacked so
+   neither is nested inside the other. */
+.picker-cell { display: grid; gap: 0.35rem; align-content: start; }
+.picker-cell > .btn:first-child { width: 100%; }
+.btn-small { min-height: 2.4rem; padding: 0.3rem 0.7rem; font-size: 0.85rem; }
+
+/* Inline form inside a card (add participant, edit passage). */
+.card-inset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+  margin-top: 1rem;
+  background: var(--card-2);
+}
+label.stacked { display: grid; gap: 0.35rem; font-weight: 600; margin-bottom: 0.75rem; }
+label.stacked input[type="text"],
+label.stacked textarea {
+  font: inherit;
+  color: var(--text);
+  background: #0b0e13;
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  min-height: 3rem;
+  width: 100%;
+  resize: vertical;
+}
+label.stacked input:focus-visible,
+label.stacked textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
