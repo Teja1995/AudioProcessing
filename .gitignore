@@ -1,0 +1,8 @@
+# Recorded data never goes in git — it is personal data under GDPR and is
+# exported only via the verified USB copy.
+data/
+
+__pycache__/
+*.pyc
+.venv/
+venv/

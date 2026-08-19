@@ -1,0 +1,13 @@
+# The five permitted third-party dependencies (CLAUDE.md, Conventions).
+# pydantic arrives transitively with fastapi.
+#
+# BEFORE TRAVEL: install on the actual habitat laptop, run the full
+# acceptance checklist with networking off, then freeze exact versions:
+#     pip freeze > requirements.lock
+# and commit the lock (ARCHITECTURE.md §15).
+
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.26
+fastapi>=0.110
+uvicorn>=0.29

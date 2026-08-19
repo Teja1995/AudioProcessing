@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Capture — SPACE READY_4</title>
+<!-- Offline: system fonts, local assets only. Never add a CDN link here. -->
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body data-page="capture">
+
+<header class="topbar">
+  <h1>Voice Capture</h1>
+  <p id="session-badge" class="badge" hidden></p>
+  <nav><a href="/dashboard">Adherence dashboard</a></nav>
+</header>
+
+<!-- Loud, non-dismissable notices (connection lost, path collision).
+     Session-fatal errors do NOT come here — they take the whole screen. -->
+<div id="banners" class="banners" role="status" aria-live="polite"></div>
+
+<main id="main">
+
+  <!-- ==================== 1. START ==================== -->
+  <section id="screen-start" class="screen" hidden>
+    <h2>Before you start</h2>
+
+    <div class="card">
+      <h3>What is already on disk</h3>
+      <div id="summary-block" class="block">Loading…</div>
+    </div>
+
+    <div class="card">
+      <h3>Microphone</h3>
+      <div id="device-block" class="block">Loading…</div>
+      <div id="checklist-block" class="block"></div>
+    </div>
+
+    <div class="card">
+      <h3>Who is recording?</h3>
+      <p class="muted">Pseudonyms only. Names are never stored here.</p>
+      <div id="participant-block" class="block">Loading…</div>
+    </div>
+  </section>
+
+  <!-- ==================== 2. CONSENT ==================== -->
+  <section id="screen-consent" class="screen" hidden>
+    <h2>Consent — <span id="consent-who" class="who"></span></h2>
+    <p class="lead">Read every point out loud with the participant. All five
+      points must be agreed. There is no partial consent.</p>
+
+    <div class="card">
+      <ol id="consent-points" class="consent-points">
+        <li class="muted">Loading the consent text from the server…</li>
+      </ol>
+      <p id="consent-version" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h3>Time (UTC) from the trusted source</h3>
+      <p class="muted">The consent record is stamped with this time, not with
+        the laptop clock.</p>
+      <div class="utc-entry">
+        <label>Date (UTC)<input id="consent-utc-date" type="date" autocomplete="off"></label>
+        <label>Time (UTC)<input id="consent-utc-time" type="time" step="1" autocomplete="off"></label>
+      </div>
+      <p class="preview">Will be recorded as: <output id="consent-utc-preview">—</output></p>
+    </div>
+
+    <div class="card">
+      <label class="agree">
+        <input id="consent-agree" type="checkbox">
+        <span>The participant has read (or had read to them) all points above,
+          has had the chance to ask questions, and agrees.</span>
+      </label>
+      <div class="row-actions">
+        <button id="consent-back" class="btn btn-quiet" type="button">Back</button>
+        <button id="consent-submit" class="btn btn-go" type="button" disabled>Record consent and continue</button>
+      </div>
+      <p id="consent-error" class="error" hidden></p>
+    </div>
+  </section>
+
+  <!-- ==================== 3. SESSION SETUP ==================== -->
+  <section id="screen-setup" class="screen" hidden>
+    <h2>Session setup — <span id="setup-who" class="who"></span></h2>
+
+    <div class="card card-critical">
+      <h3>Current time in UTC — required</h3>
+      <p class="lead">Read it from the trusted watch or GPS. <strong>Do not use
+        the laptop clock.</strong></p>
+      <p>The habitat clocks are deliberately scrambled for the time-perception
+        protocol, so this laptop cannot tell the time. This is the
+        <strong>only field that cannot be marked "not available"</strong>: the
+        session ID and the whole timeline of the dataset are built from it.
+        Nothing is pre-filled, on purpose.</p>
+      <div class="utc-entry">
+        <label>Date (UTC)<input id="setup-utc-date" type="date" autocomplete="off"></label>
+        <label>Time (UTC)<input id="setup-utc-time" type="time" step="1" autocomplete="off"></label>
+      </div>
+      <p class="preview">Will be recorded as: <output id="setup-utc-preview">—</output></p>
+    </div>
+
+    <div class="card">
+      <h3>Physical setup</h3>
+      <div class="form-grid">
+        <div class="field" data-field="mouth_to_mic_cm" data-type="number">
+          <label for="setup-distance">Mouth to microphone (cm)</label>
+          <input id="setup-distance" type="number" min="0" step="0.5" inputmode="decimal" autocomplete="off">
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="room_label" data-type="text">
+          <label for="setup-room">Room / location label</label>
+          <input id="setup-room" type="text" autocomplete="off" placeholder="e.g. habitat lab bench">
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+      </div>
+      <p class="muted">Left blank is recorded as "never asked". "not available"
+        is recorded as an explicit n/a. Neither one blocks the session.</p>
+      <div class="row-actions">
+        <button id="setup-back" class="btn btn-quiet" type="button">Back</button>
+        <button id="setup-submit" class="btn btn-go" type="button">Start session</button>
+      </div>
+      <p id="setup-error" class="error" hidden></p>
+    </div>
+  </section>
+
+  <!-- ==================== 4a. REFERENCE MEASURES ==================== -->
+  <section id="screen-reference" class="screen" hidden>
+    <h2>Reference measures</h2>
+    <p class="lead">Enter these now, at the same moment as the recording. They
+      are the criterion the voice data is tested against — the simultaneity is
+      what makes them usable.</p>
+
+    <div class="card">
+      <div class="form-grid">
+        <div class="field" data-field="urine_specific_gravity" data-type="number">
+          <label for="ref-usg">Urine specific gravity</label>
+          <input id="ref-usg" type="number" step="0.001" min="1" max="1.06" inputmode="decimal" placeholder="1.020" autocomplete="off">
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="urine_colour_1_to_8" data-type="choice">
+          <label>Urine colour chart (1–8)</label>
+          <div class="choices choices-8">
+            <button class="btn choice" type="button" data-value="1" aria-pressed="false">1</button>
+            <button class="btn choice" type="button" data-value="2" aria-pressed="false">2</button>
+            <button class="btn choice" type="button" data-value="3" aria-pressed="false">3</button>
+            <button class="btn choice" type="button" data-value="4" aria-pressed="false">4</button>
+            <button class="btn choice" type="button" data-value="5" aria-pressed="false">5</button>
+            <button class="btn choice" type="button" data-value="6" aria-pressed="false">6</button>
+            <button class="btn choice" type="button" data-value="7" aria-pressed="false">7</button>
+            <button class="btn choice" type="button" data-value="8" aria-pressed="false">8</button>
+          </div>
+          <span class="hint">Match against the printed chart, not the screen.</span>
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="body_mass_kg" data-type="number">
+          <label for="ref-mass">Body mass (kg)</label>
+          <input id="ref-mass" type="number" step="0.1" min="0" inputmode="decimal" autocomplete="off">
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="fluid_intake_ml" data-type="number">
+          <label for="ref-fluid">Fluid intake since last session (ml)</label>
+          <input id="ref-fluid" type="number" step="10" min="0" inputmode="decimal" autocomplete="off">
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+      </div>
+      <p id="reference-count" class="muted"></p>
+      <div class="row-actions">
+        <button id="reference-submit" class="btn btn-go" type="button">Save and continue</button>
+      </div>
+      <p id="reference-error" class="error" hidden></p>
+    </div>
+  </section>
+
+  <!-- ==================== 4b. COVARIATES ==================== -->
+  <section id="screen-covariates" class="screen" hidden>
+    <h2>Covariates</h2>
+    <p class="lead">Nothing here can stop the session. A missing covariate is a
+      small loss; a refused session is a large one.</p>
+
+    <div class="card">
+      <div class="form-grid">
+        <div class="field" data-field="minutes_since_exercise" data-type="int">
+          <label for="cov-exercise">Minutes since last exercise</label>
+          <input id="cov-exercise" type="number" min="0" step="1" inputmode="numeric" autocomplete="off">
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="breathing_route" data-type="choice">
+          <label>Breathing route</label>
+          <div class="choices">
+            <button class="btn choice" type="button" data-value="nasal" aria-pressed="false">nasal</button>
+            <button class="btn choice" type="button" data-value="oral" aria-pressed="false">oral</button>
+          </div>
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="caffeine_since_last" data-type="choice">
+          <label>Caffeine since last session</label>
+          <div class="choices">
+            <button class="btn choice" type="button" data-value="true" aria-pressed="false">yes</button>
+            <button class="btn choice" type="button" data-value="false" aria-pressed="false">no</button>
+          </div>
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="alcohol_since_last" data-type="choice">
+          <label>Alcohol since last session</label>
+          <div class="choices">
+            <button class="btn choice" type="button" data-value="true" aria-pressed="false">yes</button>
+            <button class="btn choice" type="button" data-value="false" aria-pressed="false">no</button>
+          </div>
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="speaking_load_estimate" data-type="int">
+          <label for="cov-speaking">Speaking load since last session (0–10)</label>
+          <input id="cov-speaking" type="number" min="0" max="10" step="1" inputmode="numeric" autocomplete="off">
+          <span class="hint">0 = silent, 10 = talking all day</span>
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="hours_slept" data-type="number">
+          <label for="cov-sleep">Hours slept</label>
+          <input id="cov-sleep" type="number" min="0" max="24" step="0.25" inputmode="decimal" autocomplete="off">
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="upper_respiratory_symptoms" data-type="choice">
+          <label>Cold, sore throat or blocked nose</label>
+          <div class="choices">
+            <button class="btn choice" type="button" data-value="true" aria-pressed="false">yes</button>
+            <button class="btn choice" type="button" data-value="false" aria-pressed="false">no</button>
+          </div>
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="medication" data-type="text">
+          <label for="cov-medication">Medication</label>
+          <input id="cov-medication" type="text" autocomplete="off" placeholder="name, or none">
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="menstrual_cycle_phase" data-type="text">
+          <label for="cov-cycle">Menstrual cycle phase</label>
+          <input id="cov-cycle" type="text" autocomplete="off" placeholder="where applicable">
+          <span class="hint">Leave blank if it does not apply.</span>
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="habitat_temperature_c" data-type="number">
+          <label for="cov-temp">Habitat temperature (°C)</label>
+          <input id="cov-temp" type="number" step="0.1" inputmode="decimal" autocomplete="off">
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+        <div class="field" data-field="habitat_humidity_pct" data-type="number">
+          <label for="cov-humidity">Habitat humidity (%)</label>
+          <input id="cov-humidity" type="number" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
+          <button class="btn na-btn" type="button" aria-pressed="false">not available</button>
+        </div>
+      </div>
+      <p id="covariates-count" class="muted"></p>
+      <div class="row-actions">
+        <button id="covariates-submit" class="btn btn-go" type="button">Save and start recording</button>
+      </div>
+      <p id="covariates-error" class="error" hidden></p>
+    </div>
+  </section>
+
+  <!-- ==================== 5. TASK BATTERY ==================== -->
+  <section id="screen-task" class="screen screen-task" hidden>
+    <p id="task-progress" class="progress"></p>
+    <h2 id="task-title">—</h2>
+    <p id="task-stem" class="stem-chip" hidden></p>
+    <p id="task-instruction" class="instruction">—</p>
+    <p id="task-shape" class="task-shape"></p>
+    <div id="task-demo" class="demo"></div>
+
+    <div class="take-controls">
+      <button id="take-button" class="btn btn-record" type="button">Start recording</button>
+      <p id="take-elapsed" class="elapsed" hidden>0.0 s</p>
+    </div>
+
+    <p id="take-result" class="take-result" hidden></p>
+    <p id="task-error" class="error" hidden></p>
+    <div id="task-redo" class="redo-note"></div>
+  </section>
+
+  <!-- ==================== 5b. BORG CR-10 ==================== -->
+  <section id="screen-borg" class="screen" hidden>
+    <h2>Effort rating — <span id="borg-task" class="who"></span></h2>
+    <p class="lead">Ask the participant: <strong>how hard did that feel?</strong>
+      Their answer, not yours.</p>
+    <div class="card">
+      <div id="borg-scale" class="borg-scale"></div>
+      <div class="row-actions">
+        <button id="borg-na" class="btn btn-quiet" type="button">not available — skip</button>
+      </div>
+      <p id="borg-error" class="error" hidden></p>
+    </div>
+  </section>
+
+  <!-- ==================== 6. QC REVIEW ==================== -->
+  <section id="screen-qc" class="screen" hidden>
+    <h2>Quick check before finishing</h2>
+    <p class="lead">These are integrity checks only, not analysis. Re-record
+      anything flagged now — it is far cheaper than losing it.</p>
+    <p id="qc-headline" class="qc-headline"></p>
+    <div id="qc-list" class="block">Loading…</div>
+    <p id="qc-error" class="error" hidden></p>
+    <div class="row-actions">
+      <button id="qc-refresh" class="btn btn-quiet" type="button">Refresh list</button>
+      <button id="qc-complete" class="btn btn-go" type="button">Complete session</button>
+    </div>
+  </section>
+
+  <!-- ==================== 7. COMPLETE ==================== -->
+  <section id="screen-complete" class="screen" hidden>
+    <h2>Session complete</h2>
+    <div class="card">
+      <p id="complete-detail" class="lead"></p>
+      <p class="muted">Every take is already written to disk. Nothing was held
+        in memory waiting for the end of the session.</p>
+      <div class="row-actions">
+        <button id="complete-again" class="btn btn-go" type="button">Back to start</button>
+        <a class="btn btn-quiet" href="/dashboard">Adherence dashboard</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== FALLBACK ==================== -->
+  <section id="screen-unknown" class="screen" hidden>
+    <h2>Unexpected session state</h2>
+    <div class="card">
+      <p class="lead">The server reports a phase this screen does not know how
+        to draw. Nothing has been lost — completed takes are on disk.</p>
+      <pre id="unknown-detail" class="pre"></pre>
+      <div class="row-actions">
+        <button id="unknown-resync" class="btn btn-go" type="button">Re-sync with the server</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- Live input level. Same place on every screen of an active session, so a
+     tired operator never has to hunt for it. -->
+<footer id="meter-bar" class="meter-bar" hidden>
+  <div class="meter-head">
+    <span class="meter-label">Input level</span>
+    <span id="meter-readout" class="meter-readout">no signal yet</span>
+    <span id="meter-stale" class="meter-stale" hidden>NO LEVEL DATA FROM THE SERVER</span>
+  </div>
+  <div id="meter" class="meter">
+    <div id="meter-fill"></div>
+    <div id="meter-peak" hidden></div>
+  </div>
+  <p id="clip-indicator" class="clip" role="alert" hidden>CLIPPING — TOO LOUD</p>
+  <p id="clip-latch" class="clip-latch" hidden>THIS TAKE CLIPPED — RE-RECORD IT AT THE QUICK CHECK</p>
+</footer>
+
+<!-- Session-fatal errors: full screen, with no way out into a broken session. -->
+<div id="fatal" class="fatal" role="alertdialog" aria-modal="true" aria-labelledby="fatal-code" hidden>
+  <div class="fatal-inner">
+    <p class="fatal-kicker">RECORDING ERROR — STOP</p>
+    <h2 id="fatal-code">error</h2>
+    <pre id="fatal-message" class="pre"></pre>
+    <p class="fatal-lead">Do not carry on with this session. Takes recorded
+      after an error like this may never reach the disk.</p>
+    <ol class="fatal-steps">
+      <li>Check the microphone cable and that the device is still connected.</li>
+      <li>Check there is free space on the disk.</li>
+      <li>Restart the capture application, then start a new session for this
+        participant.</li>
+    </ol>
+    <p class="muted">Takes already saved are safe: a file only gets its final
+      name once it has been fully written.</p>
+    <button id="fatal-recheck" class="btn btn-quiet" type="button">Re-check the server</button>
+    <p id="fatal-recheck-result" class="muted" hidden></p>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

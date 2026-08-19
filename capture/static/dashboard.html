@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adherence — SPACE READY_4</title>
+<!-- Offline: system fonts, local assets only. Never add a CDN link here. -->
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body data-page="dashboard">
+
+<header class="topbar">
+  <h1>Adherence dashboard</h1>
+  <nav><a href="/">Back to capture</a></nav>
+</header>
+
+<div id="banners" class="banners" role="status" aria-live="polite"></div>
+
+<main id="main">
+
+  <section class="screen">
+    <div class="card">
+      <div class="row-actions row-actions-left">
+        <button id="adherence-refresh" class="btn btn-quiet" type="button">Refresh</button>
+        <p id="adherence-meta" class="muted"></p>
+      </div>
+      <p id="adherence-error" class="error" hidden></p>
+
+      <!-- Colour is never the only signal: every cell also carries a symbol
+           and a letter, and every row carries counts. -->
+      <ul class="legend">
+        <li><span class="cell cell-complete">✓</span> complete</li>
+        <li><span class="cell cell-flagged">!</span> flagged (QC warning)</li>
+        <li><span class="cell cell-missing">·</span> missing</li>
+        <li><span class="cell cell-unknown">?</span> unknown status</li>
+      </ul>
+
+      <div id="adherence-grid" class="grid-scroll">Loading…</div>
+    </div>
+
+    <div class="card">
+      <h3>Copy everything to USB</h3>
+      <p class="muted">Copies the whole <code>data/</code> tree, then re-walks
+        both trees and compares every file and its byte size. The
+        name-to-pseudonym key file is deliberately not part of this export.</p>
+      <div class="utc-entry">
+        <label>Destination folder on the USB drive
+          <input id="export-destination" type="text" autocomplete="off" placeholder="E:\space_ready_backup" spellcheck="false">
+        </label>
+      </div>
+      <div class="row-actions row-actions-left">
+        <button id="export-run" class="btn btn-go" type="button">Copy and verify</button>
+      </div>
+      <div id="export-result" class="block"></div>
+    </div>
+  </section>
+
+</main>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
