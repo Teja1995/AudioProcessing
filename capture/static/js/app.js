@@ -225,6 +225,7 @@ function isNotImplemented(err) {
 // ---------------------------------------------------------------------------
 
 const app = {
+  demos: null, // which spoken examples exist; filled by loadDemoAvailability()
   page: document.body.dataset.page || "capture",
   localStep: "start", // start | consent | setup | complete — only before/after a session
   shownScreen: null,
@@ -712,6 +713,7 @@ function loadStart() {
   loadSummary();
   loadDevices();
   loadParticipants();
+  loadDemoAvailability();
   loadConsentText();
 }
 
@@ -2014,6 +2016,25 @@ function renderDemo(task, recording) {
   if (!task.spoken_demo) return;
 
   const source = `/static/audio/demo_${task.key}.wav`;
+  // app.demos is filled once from GET /api/demos. Undefined means we have not
+  // asked yet, in which case offer the control and let playback report for
+  // itself; false means the server looked and the file is not there.
+  const known = app.demos && Object.prototype.hasOwnProperty.call(app.demos, task.key);
+  const present = known ? app.demos[task.key] === true : true;
+
+  if (!present) {
+    host.append(
+      h("p", {
+        class: "hint",
+        text:
+          "No recorded example for this task yet. Demonstrate it out loud " +
+          "yourself, the same way every session. (Record the examples once " +
+          "with: python -m tools.record_demos)",
+      })
+    );
+    return;
+  }
+
   const player = h("audio", { preload: "none", src: source });
   const status = h("span", { class: "hint" });
   const play = h(
@@ -2027,7 +2048,7 @@ function renderDemo(task, recording) {
         const started = player.play();
         if (started && typeof started.catch === "function") {
           started.catch(function (err) {
-            status.textContent = `Could not play the example (${source}): ${err.message}. Say the task out loud instead.`;
+            status.textContent = `Could not play the example: ${err.message}. Say the task out loud instead.`;
           });
         }
       },
@@ -2036,9 +2057,23 @@ function renderDemo(task, recording) {
   );
   player.addEventListener("error", function () {
     play.disabled = true;
-    status.textContent = `Spoken example not found: ${source}. Demonstrate the task out loud instead.`;
+    status.textContent =
+      "The recorded example is missing. Demonstrate the task out loud instead.";
   });
   host.append(play, status, player);
+}
+
+// Which spoken examples exist. Asked once at startup so a task screen never
+// offers a control that cannot work. Vowel tasks are absent by design.
+async function loadDemoAvailability() {
+  try {
+    const data = await api("GET", "/api/demos");
+    app.demos = (data && data.demos) || {};
+  } catch (err) {
+    // Not fatal: renderDemo falls back to offering the control and letting
+    // playback report for itself.
+    app.demos = null;
+  }
 }
 
 function renderTakeResult() {

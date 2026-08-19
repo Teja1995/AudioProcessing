@@ -57,5 +57,54 @@ class TaskBatteryTests(unittest.TestCase):
         self.assertEqual(slots[-1].task.key, "mpt")
 
 
+
+
+class InstructionClarityTests(unittest.TestCase):
+    """The crew is international and the operator is tired. Every instruction
+    has to say which sound to make without relying on phonetic notation."""
+
+    def test_every_instruction_is_a_real_sentence(self) -> None:
+        for task in TASKS:
+            self.assertGreater(
+                len(task.instruction), 40, f"{task.key}: instruction too terse"
+            )
+            self.assertTrue(
+                task.instruction.rstrip().endswith("."),
+                f"{task.key}: instruction should read as prose",
+            )
+
+    def test_sound_tasks_anchor_to_a_familiar_word(self) -> None:
+        # "/a/" means nothing to a non-specialist; "the vowel in FATHER" does.
+        # A written anchor conveys WHICH sound without conveying a pitch, so
+        # it is safe for the vowel tasks where an audio model never is.
+        anchors = {
+            "sustained_a": "FATHER",
+            "sustained_i": "SEE",
+            "soft_pa": "PARK",
+            "mpt": "FATHER",
+        }
+        for key, anchor in anchors.items():
+            task = next(t for t in TASKS if t.key == key)
+            self.assertIn(anchor, task.instruction, f"{key}: no word anchor")
+
+    def test_no_instruction_uses_slash_phonetic_notation(self) -> None:
+        for task in TASKS:
+            self.assertNotIn(
+                "/a/", task.instruction, f"{task.key}: raw phonetic notation"
+            )
+            self.assertNotIn(
+                "/i/", task.instruction, f"{task.key}: raw phonetic notation"
+            )
+
+    def test_effort_tasks_say_what_maximal_means(self) -> None:
+        # Task 5 is about minimal effort, 7 about speed, 8 and 9 about
+        # duration. Each instruction must carry its own emphasis.
+        by_key = {t.key: t.instruction for t in TASKS}
+        self.assertIn("QUIETLY", by_key["soft_pa"])
+        self.assertIn("FAST", by_key["pataka"])
+        self.assertIn("as long as you can", by_key["s_z"])
+        self.assertIn("AS LONG AS YOU POSSIBLY CAN", by_key["mpt"])
+
+
 if __name__ == "__main__":
     unittest.main()

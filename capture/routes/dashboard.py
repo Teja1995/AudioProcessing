@@ -165,3 +165,26 @@ async def clear_input_selection() -> dict[str, object]:
     _refuse_while_recording()
     selection.clear_selection()
     return {"selected": None}
+
+
+@router.get("/demos")
+async def demo_availability() -> dict[str, object]:
+    """Which spoken-example files actually exist on disk.
+
+    The UI asks before offering a "play the example" control, so a missing
+    file becomes a calm instruction to demonstrate out loud rather than a
+    failed playback the operator discovers mid-task.
+
+    Vowel tasks never appear here. Playing a model of /a/, /i/ or maximum
+    phonation time would anchor the participant's pitch, and fundamental
+    frequency is one of the study's measures (CLAUDE.md, task battery).
+    """
+    from capture.domain.tasks import TASKS
+
+    available: dict[str, bool] = {}
+    for task in TASKS:
+        if not task.spoken_demo:
+            continue
+        path = config.STATIC_DIR / "audio" / f"demo_{task.key}.wav"
+        available[task.key] = path.is_file()
+    return {"demos": available}
