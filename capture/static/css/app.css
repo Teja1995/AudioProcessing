@@ -862,3 +862,40 @@ table.grid td.summary-col {
 }
 .take-result.warn { color: var(--warn-text); }
 .take-result.pass { color: var(--ok-text); }
+
+/* ========================================================================
+   19. Overflow containment
+   ==================================================================== */
+
+/* Grid and flex children default to min-width:auto, so a wide child — the
+   21-column adherence table — pushes past the container's max-width instead
+   of scrolling inside it. The whole card then hangs off to the right and the
+   page stops looking centred. min-width:0 lets the cap actually hold. */
+.screen > * { min-width: 0; }
+.card > * { min-width: 0; }
+.grid-scroll { overflow-x: auto; max-width: 100%; }
+
+/* The dashboard is a wide table by nature, so it gets more room than the
+   one-decision-at-a-time capture screens — still centred, just wider. */
+body[data-page="dashboard"] .screen { max-width: 76rem; }
+
+/* ========================================================================
+   20. Withdrawal (GDPR)
+   ==================================================================== */
+
+.withdraw-list { display: grid; gap: var(--sp-2); }
+
+.withdraw-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.withdraw-row .who-name { font-weight: 650; font-size: var(--fs-lead); }
+.withdraw-row .who-detail { color: var(--text-dim); font-size: var(--fs-small); }
+.withdraw-confirm { display: grid; gap: var(--sp-3); }

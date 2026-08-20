@@ -38,6 +38,20 @@
       <div id="adherence-grid" class="grid-scroll">Loading…</div>
     </div>
 
+    <!-- Withdrawal is a GDPR right, not an admin convenience: a participant
+         may stop at any time and have everything of theirs deleted. It lives
+         here because it is deliberate and irreversible, unlike removing a
+         mistyped pseudonym on the capture screen. -->
+    <div class="card">
+      <h3>Withdraw a participant</h3>
+      <p class="muted">Deletes <strong>all</strong> of that person's recordings,
+        metadata, consent record and log rows. A tombstone is kept recording
+        that the withdrawal happened, because the fact must outlive the data.
+        This cannot be undone.</p>
+      <div id="withdraw-list" class="withdraw-list">Loading…</div>
+      <p id="withdraw-error" class="error" hidden></p>
+    </div>
+
     <div class="card">
       <h3>Copy everything to USB</h3>
       <p class="muted">Copies the whole <code>data/</code> tree, then re-walks

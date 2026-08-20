@@ -3192,6 +3192,195 @@ async function loadAdherence() {
   renderAdherence(data);
 }
 
+
+// ---------------------------------------------------------------------------
+// Withdrawal (GDPR).
+//
+// A participant may stop at any time and have everything of theirs deleted.
+// The endpoint has existed all along, but nothing in the interface called it,
+// so the capture screen sent operators to a control that did not exist.
+//
+// Deliberately heavier than the capture screen's "Remove": that one only
+// clears a mistyped pseudonym with no recordings. This deletes audio,
+// metadata, consent and log rows, and writes a tombstone so the FACT of the
+// withdrawal outlives the data. The pseudonym must be retyped, matching the
+// server, which refuses without it.
+// ---------------------------------------------------------------------------
+
+let withdrawToken = 0;
+
+async function loadWithdrawList() {
+  const host = el("withdraw-list");
+  if (!host) return;
+  const token = ++withdrawToken;
+
+  let people;
+  try {
+    people = await api("GET", "/api/participants");
+  } catch (err) {
+    if (token !== withdrawToken) return;
+    clear(host);
+    host.append(
+      h("p", { class: "error", text: `Cannot read the participant list: ${err.message}` }),
+      h("button", { class: "btn btn-quiet", type: "button", onclick: loadWithdrawList }, "Try again")
+    );
+    return;
+  }
+
+  if (token !== withdrawToken) return;
+  clear(host);
+
+  const rows = asArray(people).map(normalizeParticipant).filter(function (each) {
+    return each.pseudonym;
+  });
+  if (!rows.length) {
+    host.append(h("p", { class: "muted", text: "No participants are registered." }));
+    return;
+  }
+
+  for (const person of rows) {
+    const detail = [];
+    if (Number.isFinite(person.nextSession)) {
+      const recorded = Math.max(0, person.nextSession - 1);
+      detail.push(`${recorded} session${recorded === 1 ? "" : "s"} recorded`);
+    }
+    detail.push(person.consented === true ? "consent on file" : "no consent record");
+
+    host.append(
+      h(
+        "div",
+        { class: "withdraw-row" },
+        h(
+          "div",
+          {},
+          h("div", { class: "who-name", text: person.pseudonym }),
+          h("div", { class: "who-detail", text: detail.join(" \u00b7 ") })
+        ),
+        h(
+          "button",
+          {
+            class: "btn btn-danger-quiet",
+            type: "button",
+            onclick: function () {
+              startWithdraw(person);
+            },
+          },
+          "Withdraw"
+        )
+      )
+    );
+  }
+}
+
+// Two steps on purpose. The first click only opens the confirmation; nothing
+// is deleted until the pseudonym is retyped and a UTC time is given, because
+// the withdrawal record needs a trustworthy timestamp like every other event.
+function startWithdraw(person) {
+  const host = el("withdraw-list");
+  if (!host) return;
+  hideInline("withdraw-error");
+  clear(host);
+
+  const typed = h("input", { type: "text", autocomplete: "off", spellcheck: "false" });
+  const date = h("input", { type: "date", autocomplete: "off" });
+  const time = h("input", { type: "time", step: "60", autocomplete: "off" });
+  attachNativePicker(date);
+  attachNativePicker(time);
+
+  const status = h("p", { class: "hint", hidden: true });
+  const go = h(
+    "button",
+    {
+      class: "btn btn-danger",
+      type: "button",
+      onclick: async function () {
+        const confirmName = typed.value.trim();
+        if (confirmName !== person.pseudonym) {
+          status.hidden = false;
+          status.className = "error";
+          status.textContent =
+            `Nothing was deleted. Type ${person.pseudonym} exactly to confirm.`;
+          return;
+        }
+        if (!date.value || !time.value) {
+          status.hidden = false;
+          status.className = "error";
+          status.textContent =
+            "Enter the current UTC time from the trusted source. The " +
+            "withdrawal record is stamped with it, not with this laptop's clock.";
+          return;
+        }
+        const utc = `${date.value}T${time.value}:00`;
+        go.disabled = true;
+        status.hidden = false;
+        status.className = "hint";
+        status.textContent = "Deleting\u2026";
+        try {
+          const result = await api(
+            "POST",
+            `/api/participants/${encodeURIComponent(person.pseudonym)}/withdraw`,
+            { confirm_pseudonym: confirmName, utc_operator_entered: utc }
+          );
+          await loadWithdrawList();
+          await loadAdherence();
+          showInlineOk(
+            `${person.pseudonym} withdrawn. ` +
+              (result && result.files_deleted !== undefined
+                ? `${result.files_deleted} file(s) deleted. `
+                : "") +
+              "A tombstone recording the withdrawal was kept."
+          );
+        } catch (err) {
+          go.disabled = false;
+          status.className = "error";
+          status.textContent = `Not withdrawn: ${err.message}`;
+        }
+      },
+    },
+    `Delete everything for ${person.pseudonym}`
+  );
+
+  host.append(
+    h(
+      "div",
+      { class: "withdraw-confirm" },
+      h("p", {
+        class: "notice",
+        text:
+          `This deletes every recording, the metadata, the consent record and ` +
+          `the log rows for ${person.pseudonym}. It cannot be undone.`,
+      }),
+      h("label", { class: "stacked" }, `Type ${person.pseudonym} to confirm`, typed),
+      h(
+        "div",
+        { class: "utc-entry" },
+        h("label", {}, "Date (UTC)", date),
+        h("label", {}, "Time (UTC)", time)
+      ),
+      h("p", {
+        class: "hint",
+        text:
+          "From the trusted watch or GPS, not this laptop \u2014 the habitat " +
+          "clocks are deliberately scrambled.",
+      }),
+      h(
+        "div",
+        { class: "row-actions row-actions-left" },
+        go,
+        h("button", { class: "btn btn-quiet", type: "button", onclick: loadWithdrawList }, "Cancel")
+      ),
+      status
+    )
+  );
+}
+
+// A short-lived confirmation on the dashboard, distinct from the error line.
+function showInlineOk(text) {
+  const host = el("withdraw-list");
+  if (!host) return;
+  host.prepend(h("p", { class: "ok-note", text: text }));
+}
+
 function renderAdherence(data) {
   const host = el("adherence-grid");
   if (!host) return;
@@ -3490,10 +3679,19 @@ function wireCapture() {
 
 function wireDashboard() {
   const refresh = el("adherence-refresh");
-  if (refresh) refresh.addEventListener("click", loadAdherence);
+  // Refresh both panels: a withdrawal changes the grid, and a new
+  // participant changes the withdraw list.
+  if (refresh)
+    refresh.addEventListener("click", function () {
+      loadAdherence();
+      loadWithdrawList();
+    });
   const exportRun = el("export-run");
   if (exportRun) exportRun.addEventListener("click", runExport);
   loadAdherence();
+  // The capture screen's "Remove" sends the operator here for anyone who
+  // already has recordings, so the control it names has to exist.
+  loadWithdrawList();
 }
 
 if (app.page === "dashboard") wireDashboard();
