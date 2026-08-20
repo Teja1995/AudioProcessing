@@ -899,3 +899,25 @@ body[data-page="dashboard"] .screen { max-width: 76rem; }
 .withdraw-row .who-name { font-weight: 650; font-size: var(--fs-lead); }
 .withdraw-row .who-detail { color: var(--text-dim); font-size: var(--fs-small); }
 .withdraw-confirm { display: grid; gap: var(--sp-3); }
+
+/* ========================================================================
+   21. The grid track itself must be allowed to shrink
+   ==================================================================== */
+
+/* .screen is a grid. A track sized `auto` takes its MINIMUM from the
+   content, so the 21-column adherence table (about 86rem wide) expanded the
+   card past the container's 76rem cap and the whole page sat off-centre.
+   min-width:0 on the child is not enough — the TRACK is what refuses to
+   shrink. minmax(0, 1fr) is the fix: the column may shrink to nothing, so
+   the cap holds and the table scrolls inside .grid-scroll where it belongs.
+   Same reasoning for .card, which is also a grid in places. */
+.screen { grid-template-columns: minmax(0, 1fr); }
+.block { grid-template-columns: minmax(0, 1fr); }
+
+/* main is a flex item of body; without this it can be widened by its own
+   content instead of holding the viewport width. */
+main { min-width: 0; }
+
+/* The table keeps its natural width and scrolls; it must not be squeezed
+   into the container, only clipped by it. */
+.grid-scroll > table { max-width: none; }
