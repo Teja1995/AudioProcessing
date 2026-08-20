@@ -877,7 +877,11 @@ table.grid td.summary-col {
 
 /* The dashboard is a wide table by nature, so it gets more room than the
    one-decision-at-a-time capture screens — still centred, just wider. */
-body[data-page="dashboard"] .screen { max-width: 76rem; }
+/* Wide enough that the 21-session table fits WITHOUT being clipped. It
+   needs about 1185px plus card padding; 76rem left it ~70px short, so the
+   Gaps column was cut off at the card edge and the page read as pushed
+   right even though it measured perfectly centred. */
+body[data-page="dashboard"] .screen { max-width: 84rem; }
 
 /* ========================================================================
    20. Withdrawal (GDPR)
