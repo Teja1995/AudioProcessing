@@ -313,6 +313,9 @@ def _info_from_json(raw: Mapping[str, Any], where: Path) -> SessionInfo:
         os_gain_reading=raw.get("os_gain_reading"),
         mouth_to_mic_cm=raw.get("mouth_to_mic_cm"),
         room_label=raw.get("room_label"),
+        # Absent in sessions recorded before the cadence anchors existed, so
+        # .get rather than _require: an old session must still load.
+        session_anchor=raw.get("session_anchor"),
     )
 
 

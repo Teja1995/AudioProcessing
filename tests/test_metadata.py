@@ -820,5 +820,68 @@ class WithdrawalArchiveTests(StorageTestCase):
         self.assertEqual(len(pending), 2, "the second archive must not nest in the first")
 
 
+
+
+class FastedAndAnchorTests(StorageTestCase):
+    """The fasted flag and the session anchor.
+
+    Habitat clocks are scrambled, so the anchor — not the wall clock — is what
+    places a session in the day, and the waking session is the mission's
+    fasted baseline every later session is compared against.
+    """
+
+    def _meta(self, session_id: str, utc: str, anchor=None, fasted=None) -> SessionMeta:
+        return SessionMeta(
+            info=SessionInfo(
+                participant="P01",
+                session_number=1,
+                session_id=session_id,
+                utc_operator_entered_iso=utc,
+                device_clock_iso="2019-03-11T22:14:00+00:00",
+                input_device_name="Microphone (Yeti Stereo Microphone)",
+                sample_rate_hz=48000,
+                bit_depth=24,
+                session_anchor=anchor,
+            ),
+            reference_measures=ReferenceMeasures(fasted=fasted),
+        )
+
+    def test_anchor_and_fasted_survive_the_round_trip(self) -> None:
+        meta = self._meta("001_20260822T053000Z", "2026-08-22T05:30:00+00:00",
+                          anchor="waking", fasted=True)
+        metadata.write_meta(meta)
+        loaded = metadata.load_meta_if_exists("P01", "001_20260822T053000Z")
+        self.assertEqual(loaded.info.session_anchor, "waking")
+        self.assertIs(loaded.reference_measures.fasted, True)
+
+    def test_fasted_false_is_not_confused_with_missing(self) -> None:
+        # False means "they ate"; None means the field predates this build.
+        meta = self._meta("002_20260822T133000Z", "2026-08-22T13:30:00+00:00",
+                          anchor="midday", fasted=False)
+        metadata.write_meta(meta)
+        loaded = metadata.load_meta_if_exists("P01", "002_20260822T133000Z")
+        self.assertIs(loaded.reference_measures.fasted, False)
+        self.assertIsNotNone(loaded.reference_measures.fasted)
+
+    def test_older_sessions_without_the_fields_still_load(self) -> None:
+        meta = self._meta("003_20260822T203000Z", "2026-08-22T20:30:00+00:00")
+        metadata.write_meta(meta)
+        loaded = metadata.load_meta_if_exists("P01", "003_20260822T203000Z")
+        self.assertIsNone(loaded.info.session_anchor)
+        self.assertIsNone(loaded.reference_measures.fasted)
+
+    def test_every_anchor_key_round_trips(self) -> None:
+        for index, (key, _label) in enumerate(config.SESSION_ANCHORS):
+            sid = f"{index + 10:03d}_20260822T053000Z"
+            metadata.write_meta(self._meta(sid, "2026-08-22T05:30:00+00:00", anchor=key))
+            self.assertEqual(metadata.load_meta_if_exists("P01", sid).info.session_anchor, key)
+
+    def test_exactly_one_anchor_is_the_fasted_one(self) -> None:
+        keys = [key for key, _ in config.SESSION_ANCHORS]
+        self.assertIn(config.FASTED_ANCHOR, keys)
+        self.assertEqual(len(keys), 3)
+        self.assertEqual(len(set(keys)), 3, "anchor keys must be distinct")
+
+
 if __name__ == "__main__":
     unittest.main()

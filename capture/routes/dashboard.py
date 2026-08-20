@@ -281,3 +281,18 @@ async def play_test_tone() -> dict[str, object]:
     with http_errors():
         await asyncio.to_thread(playback.play_wav, config.REFERENCE_TONE_WAV)
     return {"played_through": name, "device_index": index}
+
+
+@router.get("/session-anchors")
+async def session_anchors() -> dict[str, object]:
+    """The three routine events a session can be anchored to.
+
+    Served from config so the screen and the stored value cannot drift, the
+    same reason the consent wording is served rather than duplicated.
+    """
+    return {
+        "anchors": [
+            {"key": key, "label": label} for key, label in config.SESSION_ANCHORS
+        ],
+        "fasted_anchor": config.FASTED_ANCHOR,
+    }

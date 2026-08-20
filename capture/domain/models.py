@@ -47,6 +47,13 @@ class ReferenceMeasures:
     urine_colour_1_to_8: NAable[int] = None
     body_mass_kg: NAable[float] = None
     fluid_intake_ml: NAable[float] = None
+    # Nothing eaten or drunk since waking. Unlike every other measure here
+    # this is never "not available": the operator is asked a yes/no question
+    # they can always answer, and the first session of the UTC day is the
+    # mission's fasted anchor, so a blank would undermine the baseline every
+    # later session is compared against. None only ever appears in sessions
+    # recorded before this field existed.
+    fasted: NAable[bool] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +140,10 @@ class SessionInfo:
     os_gain_reading: NAable[str] = None
     mouth_to_mic_cm: NAable[float] = None
     room_label: NAable[str] = None
+    # Which routine event this session is anchored to. The habitat clocks are
+    # scrambled, so this — not the wall clock — is what tells the analysis
+    # where in the day a session sits. One of SESSION_ANCHORS.
+    session_anchor: NAable[str] = None
 
 
 @dataclass(slots=True)

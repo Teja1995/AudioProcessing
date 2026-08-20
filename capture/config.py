@@ -101,6 +101,19 @@ CONSENT_POINTS: Final = (
     "recordings deleted, without giving a reason.",
 )
 
+# --- Session cadence -------------------------------------------------------
+#
+# Three sessions per participant per day, anchored to routine events rather
+# than clock times, because the habitat clocks are deliberately scrambled.
+# The key is what the analysis reads; the label is what the operator sees.
+# The first anchor is the mission's fasted baseline.
+SESSION_ANCHORS: Final = (
+    ("waking", "On waking, before eating or drinking"),
+    ("midday", "After the midday meal"),
+    ("before_sleep", "Before sleep"),
+)
+FASTED_ANCHOR: Final = "waking"
+
 # --- Mission shape ---
 
 SESSIONS_PER_DAY: Final = 3

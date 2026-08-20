@@ -925,3 +925,20 @@ main { min-width: 0; }
 /* The table keeps its natural width and scrolls; it must not be squeezed
    into the container, only clipped by it. */
 .grid-scroll > table { max-width: none; }
+
+/* The fasted question: a yes/no, never an "n/a", so it has no not-available
+   control and reads as a statement rather than a blank to fill. */
+.field-yesno { grid-template-columns: minmax(11rem, 1.3fr) 1fr; }
+.agree-inline { font-size: var(--fs-body); align-items: center; }
+.agree-inline input { width: 1.4rem; height: 1.4rem; margin-top: 0; }
+
+/* Session anchor: three mutually exclusive routine events, sized to be hit
+   without aiming since this is chosen at the start of every session. */
+.field-anchor { grid-template-columns: minmax(11rem, 1.3fr) 1fr; }
+.choices-anchor { display: grid; gap: var(--sp-2); }
+.choices-anchor .choice {
+  justify-content: flex-start;
+  text-align: left;
+  min-height: var(--control-h);
+  width: 100%;
+}

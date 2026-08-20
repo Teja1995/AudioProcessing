@@ -26,6 +26,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from capture import config
 from capture.domain.models import Covariates, ReferenceMeasures
 from capture.domain.state import IllegalTransition
 from capture.domain.tasks import BY_NUMBER
@@ -141,6 +142,10 @@ class SessionStartRequest(BaseModel):
     utc_operator_entered: str
     mouth_to_mic_cm: float | Literal["n/a"] | None = None
     room_label: str | Literal["n/a"] | None = None
+    # Which routine event this session is anchored to. Validated against
+    # config.SESSION_ANCHORS so a typo cannot become a fourth category that
+    # quietly splits the analysis.
+    session_anchor: str | None = None
 
 
 class ReferenceMeasuresRequest(BaseModel):
@@ -150,6 +155,10 @@ class ReferenceMeasuresRequest(BaseModel):
     urine_colour_1_to_8: Annotated[int, Field(ge=1, le=8)] | Literal["n/a"] | None = None
     body_mass_kg: float | Literal["n/a"] | None = None
     fluid_intake_ml: float | Literal["n/a"] | None = None
+    # Deliberately NOT "n/a"-able: a yes/no the operator can always answer.
+    # None means the browser sent nothing, and the service substitutes the
+    # auto-computed default rather than storing a blank.
+    fasted: bool | None = None
 
 
 class CovariatesRequest(BaseModel):
@@ -198,7 +207,12 @@ def _describe(session: ActiveSession) -> dict[str, object]:
         "os_gain_reading": info.os_gain_reading,
         "mouth_to_mic_cm": info.mouth_to_mic_cm,
         "room_label": info.room_label,
+        "session_anchor": info.session_anchor,
         "takes_recorded": len(session.meta.takes),
+        # What the fasted tick should start as. Computed from the
+        # operator-entered UTC date, so the browser never has to reason about
+        # which session of the day this is.
+        "fasted_default": service.fasted_default(session),
         # Non-null once recording has failed: the UI must block on this.
         "fatal": session.fatal,
         "state": session.state.snapshot(),
@@ -292,12 +306,25 @@ async def start_session(body: SessionStartRequest) -> dict[str, object]:
             ),
         )
 
+    anchor = body.session_anchor
+    if anchor is not None:
+        valid = {key for key, _label in config.SESSION_ANCHORS}
+        if anchor not in valid:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{anchor!r} is not a session anchor. Expected one of: "
+                    + ", ".join(sorted(valid))
+                ),
+            )
+
     with http_errors():
         session = service.start_session(
             participant=participant,
             utc_operator_entered=body.utc_operator_entered,
             mouth_to_mic_cm=body.mouth_to_mic_cm,
             room_label=body.room_label,
+            session_anchor=anchor,
         )
     log.info(
         "Session %s started for %s (operator UTC %s)",
@@ -317,6 +344,7 @@ async def submit_reference_measures(
         urine_colour_1_to_8=body.urine_colour_1_to_8,
         body_mass_kg=body.body_mass_kg,
         fluid_intake_ml=body.fluid_intake_ml,
+        fasted=body.fasted,
     )
     with http_errors():
         service.submit_reference_measures(sid, measures)

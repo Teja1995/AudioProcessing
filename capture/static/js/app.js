@@ -231,6 +231,10 @@ function isNotImplemented(err) {
 // ---------------------------------------------------------------------------
 
 const app = {
+  sessionAnchors: null, // the three routine events, served by the API
+  sessionAnchor: null,  // which one the operator chose for THIS session
+  fastedAnchorKey: null,
+  fastedDefault: null, // server's view of whether this is the day's first session
   showAllMics: false, // reveal virtual / unusable inputs in the picker
   demos: null, // which spoken examples exist; filled by loadDemoAvailability()
   page: document.body.dataset.page || "capture",
@@ -286,6 +290,7 @@ function recallSession() {
 }
 
 function forgetSession() {
+  app.sessionAnchor = null;
   app.sessionId = null;
   app.snapshot = null;
   app.lastResult = null;
@@ -764,6 +769,11 @@ async function fetchActive() {
     // Non-null once recording has failed server-side. The UI must block on it:
     // every further take command would be refused anyway.
     fatal: source.fatal === undefined ? null : source.fatal,
+    // Whether the server considers this the first session of the UTC day.
+    // The browser must not work this out for itself: the operator-entered
+    // UTC is the only trustworthy clock and only the server has the history.
+    fastedDefault:
+      source.fasted_default === undefined ? null : source.fasted_default === true,
     snapshot: snapshot,
   };
 }
@@ -797,6 +807,16 @@ async function syncActive() {
     return null;
   }
 
+  if (active.sessionId && active.sessionId !== app.sessionId) {
+    // A different session: the fasted tick must re-apply the new default
+    // rather than keep the previous participant's answer.
+    const box = el("ref-fasted");
+    if (box) {
+      delete box.dataset.initialised;
+      delete box.dataset.touched;
+    }
+  }
+  if (active.fastedDefault !== null) app.fastedDefault = active.fastedDefault;
   rememberSession(active.sessionId || app.sessionId, active.participant);
   if (active.fatal) showFatal("session_fatal", String(active.fatal));
   if (active.snapshot) setSnapshot(active.snapshot);
@@ -847,8 +867,8 @@ function render() {
   renderAbortControl();
 
   if (screen === "consent") renderConsent();
-  else if (screen === "setup") renderSetup();
-  else if (screen === "reference") renderReferenceCounts();
+  else if (screen === "setup") { loadSessionAnchors(); renderSetup(); }
+  else if (screen === "reference") { renderFastedControl(); renderReferenceCounts(); }
   else if (screen === "covariates") renderCovariateCounts();
   else if (screen === "task") renderTask();
   else if (screen === "borg") renderBorg();
@@ -2174,6 +2194,68 @@ async function onConsentSubmit() {
 // 3. Session setup.
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// Session anchor: which of the day's three sessions this is.
+//
+// The habitat clocks are deliberately scrambled, so the wall clock cannot say
+// where in the day a session sits. The routine can. This is also what decides
+// whether the fasted question starts ticked, because by the cadence's own
+// definition the waking session IS the fasted one.
+//
+// The three options come from the server so the wording here cannot drift
+// from the value that gets stored.
+// ---------------------------------------------------------------------------
+
+async function loadSessionAnchors() {
+  const host = el("setup-anchor");
+  if (!host) return;
+  if (app.sessionAnchors) {
+    renderSessionAnchors();
+    return;
+  }
+  try {
+    const data = await api("GET", "/api/session-anchors");
+    app.sessionAnchors = asArray(data.anchors);
+    app.fastedAnchorKey = data.fasted_anchor || null;
+  } catch (err) {
+    clear(host);
+    host.append(
+      h("p", { class: "error", text: `Cannot read the session list: ${err.message}` }),
+      h("button", { class: "btn btn-quiet btn-small", type: "button", onclick: loadSessionAnchors }, "Try again")
+    );
+    return;
+  }
+  renderSessionAnchors();
+}
+
+function renderSessionAnchors() {
+  const host = el("setup-anchor");
+  if (!host || !app.sessionAnchors) return;
+  clear(host);
+  for (const entry of app.sessionAnchors) {
+    const chosen = app.sessionAnchor === entry.key;
+    host.append(
+      h(
+        "button",
+        {
+          class: "btn choice",
+          type: "button",
+          "aria-pressed": chosen ? "true" : "false",
+          "data-value": entry.key,
+          onclick: function () {
+            app.sessionAnchor = app.sessionAnchor === entry.key ? null : entry.key;
+            renderSessionAnchors();
+            updateSetupSubmit();
+          },
+        },
+        entry.label
+      )
+    );
+  }
+}
+
+
 function renderSetup() {
   setText("setup-who", app.participant || "");
   updateSetupSubmit();
@@ -2183,8 +2265,14 @@ function updateSetupSubmit() {
   const submit = el("setup-submit");
   if (!submit) return;
   const utc = readUtc("setup");
-  submit.disabled = !utc;
-  submit.textContent = utc ? "Start session" : "Enter the UTC time first";
+  // The anchor is required too: without it the analysis has no
+  // clock-independent way to place this session in the day, and nothing
+  // later can recover which of the three it was.
+  const anchor = app.sessionAnchor;
+  submit.disabled = !utc || !anchor;
+  if (!utc) submit.textContent = "Enter the UTC time first";
+  else if (!anchor) submit.textContent = "Choose which session this is";
+  else submit.textContent = "Start session";
 }
 
 async function onSetupSubmit() {
@@ -2202,7 +2290,14 @@ async function onSetupSubmit() {
   submit.disabled = true;
   submit.textContent = "Starting…";
   try {
-    const body = Object.assign({ participant: app.participant, utc_operator_entered: utc }, form.values);
+    const body = Object.assign(
+      {
+        participant: app.participant,
+        utc_operator_entered: utc,
+        session_anchor: app.sessionAnchor,
+      },
+      form.values
+    );
     const data = await api("POST", "/api/sessions", body);
     const sessionId =
       (data && (data.session_id || data.sid)) || (data && data.session && data.session.session_id) || null;
@@ -2248,6 +2343,13 @@ function readForm(root) {
     if (type === "choice") {
       const chosen = field.querySelector(".choice[aria-pressed='true']");
       if (chosen) values[name] = coerceChoice(chosen.dataset.value);
+      continue;
+    }
+    if (type === "bool") {
+      // A checkbox always has an answer, so this is sent every time rather
+      // than skipped when unticked. Unticked means "no", not "never asked".
+      const box = field.querySelector("input[type='checkbox']");
+      if (box) values[name] = box.checked === true;
       continue;
     }
     const input = field.querySelector("input, textarea, select");
@@ -2347,6 +2449,43 @@ function renderCounts(rootId, outId, noun) {
       ? `All ${counts.total} ${noun} filled in.`
       : `${counts.answered} of ${counts.total} ${noun} filled in. ${missing} left blank will be recorded as "never asked" — that does not stop the session.`
   );
+}
+
+
+// The fasted tick. Session 1 of each UTC day is the mission's fasted anchor,
+// so the server works out whether this is that session and the box starts
+// there. The operator can always override it, and the label states which way
+// it was set so a pre-tick is never mistaken for something they confirmed.
+function renderFastedControl() {
+  const box = el("ref-fasted");
+  const state = el("ref-fasted-state");
+  const why = el("ref-fasted-why");
+  if (!box) return;
+
+  if (!box.dataset.initialised) {
+    const preset = app.fastedDefault === true;
+    box.checked = preset;
+    box.dataset.initialised = "1";
+    box.addEventListener("change", function () {
+      box.dataset.touched = "1";
+      renderFastedControl();
+    });
+  }
+
+  if (state) state.textContent = box.checked ? "yes — fasted" : "no — had food or drink";
+  if (why) {
+    if (box.dataset.touched) {
+      why.textContent = "Set by you.";
+    } else if (app.fastedDefault === true) {
+      why.textContent =
+        "Pre-ticked: this is the first session of the day. Untick it if they " +
+        "have eaten or drunk anything since waking.";
+    } else {
+      why.textContent =
+        "Left unticked: this is not the first session of the day. Tick it if " +
+        "they really have had nothing since waking.";
+    }
+  }
 }
 
 function renderReferenceCounts() {

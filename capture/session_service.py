@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -161,6 +161,7 @@ class SessionService:
         utc_operator_entered: str,
         mouth_to_mic_cm: Any = None,
         room_label: Any = None,
+        session_anchor: Any = None,
     ) -> ActiveSession:
         if self._active is not None:
             raise IllegalTransition(
@@ -191,6 +192,7 @@ class SessionService:
             os_gain_reading=devices.read_os_input_gain(),
             mouth_to_mic_cm=mouth_to_mic_cm,
             room_label=room_label,
+            session_anchor=session_anchor,
         )
         meta = SessionMeta(info=info)
 
@@ -240,11 +242,60 @@ class SessionService:
         self._push_state()
         return session
 
+    def is_first_session_of_utc_day(self, participant: str, utc: str) -> bool:
+        """Is this the first session for this participant on this UTC date?
+
+        The mission's cadence anchors session 1 of each day to waking, before
+        eating or drinking, so that session is the fasted baseline every
+        later one is compared against. Judged on the OPERATOR-ENTERED UTC
+        date: the device clock is scrambled and would put sessions on the
+        wrong day.
+        """
+        target_date = utc[:10]
+        directory = paths.participant_dir(participant)
+        if not directory.exists():
+            return True
+        active_id = self._active.session_id if self._active else None
+        for session_dir in sorted(directory.iterdir()):
+            if not session_dir.is_dir() or session_dir.name == active_id:
+                continue
+            meta = metadata.load_meta_if_exists(participant, session_dir.name)
+            if meta is None:
+                continue
+            if meta.info.utc_operator_entered_iso[:10] == target_date:
+                return False
+        return True
+
+    def fasted_default(self, session: ActiveSession) -> bool:
+        """What the fasted tick starts as. The operator may change it.
+
+        The chosen anchor wins when there is one: by the cadence's own
+        definition the waking session IS the fasted session, which is a
+        stronger rule than the calendar date. The date rule only covers
+        sessions recorded without an anchor.
+        """
+        anchor = session.meta.info.session_anchor
+        if isinstance(anchor, str) and anchor in {k for k, _ in config.SESSION_ANCHORS}:
+            return anchor == config.FASTED_ANCHOR
+        return self.is_first_session_of_utc_day(
+            session.participant, session.meta.info.utc_operator_entered_iso
+        )
+
     def submit_reference_measures(
         self, session_id: str, measures: ReferenceMeasures
     ) -> None:
         session = self.require_session(session_id)
         session.state.require(Phase.REFERENCE_MEASURES)
+        if measures.fasted is None:
+            # Never stored blank: fall back to the same rule the form used to
+            # pre-tick the box, so an omitted field cannot silently become a
+            # missing fasted anchor.
+            measures = replace(measures, fasted=self.fasted_default(session))
+            log.info(
+                "Session %s: fasted not supplied, defaulted to %s",
+                session_id,
+                measures.fasted,
+            )
         session.meta.reference_measures = measures
         metadata.write_meta(session.meta)
         session.state.transition(Phase.COVARIATES)

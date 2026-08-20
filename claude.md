@@ -37,21 +37,20 @@ These are non-negotiable. Violating any one of them invalidates the dataset.
   cancellation and noise suppression that cannot be reliably disabled across
   platforms, and `MediaRecorder` defaults to lossy Opus. Both destroy the
   perturbation and cepstral measures this study depends on.
-- **48 kHz, 24-bit, mono, uncompressed PCM WAV.** Never MP3, never Opus, never
-  float32 output files.
-  - **Measured caveat (2026-08-20).** The mission microphone is a Blue Yeti,
-    whose ADC is **16-bit**. Recording through WDM-KS, 100% of samples are
-    exact multiples of 2^16, which cannot happen by chance across 96,000
-    samples. Files are still written as PCM_24 with the low byte zero, so
-    nothing the hardware captured is lost, but the dataset's real resolution
-    is 16-bit and no software setting changes that. Every take records its
-    measured `effective_bits` in `meta.json`, so the analysis works from the
-    truth rather than from the container. **Open question for the study
-    team:** accept 16-bit (most published voice-perturbation work uses it),
-    or source a 24-bit interface.
+- **48 kHz, mono, uncompressed PCM WAV.** Never MP3, never Opus, never float32
+  output files. Bit depth: the Blue Yeti's ADC is 16-bit native (measured —
+  100% of samples through WDM-KS are exact multiples of 2^16). Files are
+  written as PCM_24 containers with the low byte zero; the true resolution is
+  recorded per take as `effective_bits` in meta.json. Analysis must validate
+  against `effective_bits`, not the container.
 - **No processing of any kind** on the captured signal. No normalisation, no
   filtering, no trimming, no gain applied in software. Write exactly what the
   ADC produced.
+- **Host API must be WDM-KS (or WASAPI).** MME and DirectSound silently
+  resample and must never be used. If the required host API is unavailable at
+  startup, the app must refuse to record and say why. It must never fall back
+  to a resampling path — a mid-mission switch would change the data's
+  character undetectably.
 - **Fixed input gain.** The gain is set once on the microphone, taped, and
   photographed. The app must never change it. On startup, log the OS-reported
   input device name and volume/gain level so drift is detectable afterwards.
@@ -107,6 +106,26 @@ Habitat clocks are scrambled, so `datetime.now()` is untrustworthy.
 - Store a monotonic elapsed-time counter per session so intra-session task
   ordering is always recoverable even if the entered UTC is wrong.
 
+## Session cadence
+
+Three sessions per participant per day, anchored to routine events rather than
+clock times (habitat clocks are deliberately scrambled):
+
+1. On waking, before eating or drinking — the fasted anchor
+2. After the midday meal
+3. Before sleep
+
+Target: 5 participants × 7 days × 3 sessions = 105 sessions.
+
+The operator picks which of the three a session is at setup, and it is stored
+as `session_anchor` in meta.json. **This, not the wall clock, is what places a
+session in the day** — the clocks are scrambled, so a timestamp cannot. It is
+required: the session will not start without it, because nothing later can
+recover which of the three a recording was.
+
+Choosing the waking anchor pre-ticks `fasted`, since by this cadence's own
+definition that session is the fasted one.
+
 ## Task battery
 
 Order matters. Maximal-effort tasks go last so they do not fatigue the voice
@@ -153,19 +172,17 @@ mouth-to-microphone distance in cm, room/location label.
 **Reference measures** (entered at the same moment as recording — this
 simultaneity matters, they are the criterion the voice data is tested against):
 urine specific gravity, urine colour chart value (1–8), body mass, fluid intake
-since last session.
+since last session, and:
+
+- `fasted` (boolean) — nothing eaten or drunk since waking. Auto-ticked when
+  this is the first session of the UTC day; the operator can untick it. Never
+  left blank. On-screen wording must read exactly: "Nothing to eat or drink
+  since waking?"
 
 **Covariates** (checklist, per session): minutes since last exercise, breathing
 route (nasal/oral), caffeine since last session, alcohol, estimated speaking
 load since last session, hours slept, upper-respiratory symptoms, medication,
 habitat temperature, habitat humidity.
-
-> **Removed 2026-08-20: menstrual cycle phase.** Dropped at the researcher's
-> request. It is health data under GDPR and, in a crew of 8–10, potentially
-> identifying. Note the cost: fluid retention genuinely varies across the
-> cycle, so this removes a covariate a hydration study might otherwise want
-> to control for. Reinstating it means re-adding the field to
-> `domain/models.py`, `routes/session.py` and the covariates form.
 
 Every field must be recordable as "not available" rather than blocking the
 session. A missing covariate is a small loss; a refused session is a large one.
@@ -233,17 +250,12 @@ the EU.
 - **Pseudonymous participant IDs everywhere.** The name-to-ID mapping is never
   stored in the data directory — it lives in a separate file the operator keeps
   apart.
-- A withdrawal function, in **two deliberate stages**, because one misclick by
-  a tired operator must not destroy a participant's whole week:
-  1. **Withdraw** takes them out of the study immediately — log rows and
-     registry entry removed, absent from the adherence grid, excluded from
-     the USB export — and MOVES their audio and consent record to
-     `data/_withdrawn/`. Requires the pseudonym to be retyped.
-  2. **Purge** permanently erases one archived withdrawal. A separate screen,
-     a separate confirmation, and the archive name must be retyped.
-  Both stages write a tombstone, so the fact outlives the data. **The archive
-  is still personal data**: erasure is not complete until it is purged, and it
-  must be purged before the dataset leaves the habitat.
+- Withdrawal requires typing the participant's pseudonym to confirm, and moves
+  data to `data/_withdrawn/` rather than deleting it. Permanent erasure is a
+  separate, deliberate action taken after the mission. Both stages write a
+  tombstone, so the fact of the withdrawal outlives the data. The archive is
+  still personal data: it is excluded from the USB export and from the
+  adherence grid, and must be purged before the dataset leaves the habitat.
 - No audio leaves the laptop except via the operator's explicit USB copy.
 - **The data directory must not sit inside a cloud-synced folder.** The
   default lives beside the code, and on the development machine that was
