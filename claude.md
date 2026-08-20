@@ -59,6 +59,14 @@ These are non-negotiable. Violating any one of them invalidates the dataset.
   flags enabled that can be read (Windows "Audio Enhancements", macOS ambient
   noise reduction). If they cannot be read, display a checklist the operator
   confirms manually.
+- **The capture path is validated at every session start, and recording is
+  refused if it is not clean.** No microphone chosen, the chosen one absent,
+  or the same microphone reachable only through MME/DirectSound all REFUSE to
+  start. There is deliberately no fallback to the OS default: Windows' default
+  here is a resampling path, and a session recorded through one would differ
+  in character from the rest of the week with nothing in the audio to reveal
+  it afterwards. Refusing costs one session; a silently resampled week costs
+  the study.
 - **Choose the host API, not just the device.** Measured on this hardware:
   MME and DirectSound accept EVERY sample rate offered (8 kHz to 192 kHz)
   because the Windows mixer resamples to reach them, so their acceptance
@@ -225,8 +233,17 @@ the EU.
 - **Pseudonymous participant IDs everywhere.** The name-to-ID mapping is never
   stored in the data directory — it lives in a separate file the operator keeps
   apart.
-- A withdrawal function that deletes all of a participant's audio and metadata
-  and records that the withdrawal happened.
+- A withdrawal function, in **two deliberate stages**, because one misclick by
+  a tired operator must not destroy a participant's whole week:
+  1. **Withdraw** takes them out of the study immediately — log rows and
+     registry entry removed, absent from the adherence grid, excluded from
+     the USB export — and MOVES their audio and consent record to
+     `data/_withdrawn/`. Requires the pseudonym to be retyped.
+  2. **Purge** permanently erases one archived withdrawal. A separate screen,
+     a separate confirmation, and the archive name must be retyped.
+  Both stages write a tombstone, so the fact outlives the data. **The archive
+  is still personal data**: erasure is not complete until it is purged, and it
+  must be purged before the dataset leaves the habitat.
 - No audio leaves the laptop except via the operator's explicit USB copy.
 - **The data directory must not sit inside a cloud-synced folder.** The
   default lives beside the code, and on the development machine that was

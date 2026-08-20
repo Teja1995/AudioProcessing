@@ -190,6 +190,8 @@ def startup_summary() -> dict[str, int]:
             continue
         if participant_dir == config.CONSENT_DIR:
             continue  # consent JSONs, not sessions
+        if participant_dir == config.WITHDRAWN_DIR:
+            continue  # withdrawn from the study, awaiting purge
         summary["sessions"] += sum(
             1 for child in participant_dir.iterdir() if child.is_dir()
         )

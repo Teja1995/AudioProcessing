@@ -47,6 +47,9 @@ class StorageTestCase(unittest.TestCase):
             "MASTER_LOG_PATH": self.data / "master_log.csv",
             "PARTICIPANTS_PATH": self.data / "participants.json",
             "WITHDRAWAL_LOG_PATH": self.data / "withdrawals.csv",
+            # Without this the archive lands in the real data directory —
+            # the suite wrote there before this line existed.
+            "WITHDRAWN_DIR": self.data / "_withdrawn",
         }
         for name, value in redirected.items():
             patcher = mock.patch.object(config, name, value)
@@ -587,6 +590,10 @@ class WithdrawalTests(StorageTestCase):
         self.assertEqual(summary["pseudonym"], "P01")
         self.assertEqual(summary["sessions_removed"], 2)
         self.assertEqual(summary["files_removed"], 4)  # 2 sessions x (wav + meta)
+        # "removed" means removed FROM THE STUDY. The files are archived
+        # pending a deliberate purge, not destroyed here.
+        self.assertTrue(summary["archived"])
+        self.assertTrue(Path(str(summary["archived_to"])).is_dir())
         self.assertEqual(summary["master_log_rows_removed"], 2)
         self.assertTrue(summary["consent_removed"])
         self.assertTrue(summary["registry_entry_removed"])
@@ -634,8 +641,6 @@ class WithdrawalTests(StorageTestCase):
         self.assertFalse(config.WITHDRAWAL_LOG_PATH.exists())
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class MeasuredQcFieldsSurviveRoundTripTests(StorageTestCase):
@@ -738,3 +743,82 @@ class MeasuredQcFieldsSurviveRoundTripTests(StorageTestCase):
         self.assertIsNotNone(loaded)
         self.assertIsNone(loaded.takes[0].qc.effective_bits)
         self.assertIsNone(loaded.takes[0].qc.noise_floor_dbfs)
+
+
+class WithdrawalArchiveTests(StorageTestCase):
+    """Withdrawal takes a participant out of the study but does NOT erase
+    them. A tired operator at 3am must not be able to destroy someone's whole
+    week with one misclick; permanent erasure is a separate deliberate act."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        participants.upsert_participant("P01", "Passage for P01.")
+        consent_store.record_consent("P01", "2026-08-22T07:25:00+00:00")
+        self.write_session_on_disk("P01", "001_20260822T073000Z")
+        self.write_session_on_disk("P01", "002_20260822T133000Z")
+        metadata.append_master_row(sample_row("P01"))
+
+    def test_data_is_moved_not_destroyed(self) -> None:
+        summary = withdrawal.withdraw("P01", "2026-08-24T09:00:00+00:00")
+
+        # Out of the study...
+        self.assertFalse(paths.participant_dir("P01").exists())
+        self.assertFalse(paths.consent_path("P01").exists())
+        self.assertIsNone(participants.get_participant("P01"))
+
+        # ...but recoverable until deliberately purged.
+        archive = Path(str(summary["archived_to"]))
+        self.assertTrue(archive.is_dir())
+        self.assertTrue((archive / "sessions").is_dir())
+        wavs = list(archive.rglob("*.wav"))
+        self.assertTrue(wavs, "the audio should still exist in the archive")
+
+    def test_the_archive_is_listed_for_purging(self) -> None:
+        withdrawal.withdraw("P01", "2026-08-24T09:00:00+00:00")
+        pending = withdrawal.list_withdrawn()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["pseudonym"], "P01")
+        self.assertGreater(pending[0]["files"], 0)
+
+    def test_purge_erases_permanently_and_records_the_fact(self) -> None:
+        summary = withdrawal.withdraw("P01", "2026-08-24T09:00:00+00:00")
+        archive_name = Path(str(summary["archived_to"])).name
+
+        purged = withdrawal.purge_withdrawn(archive_name, "2026-08-25T10:00:00+00:00")
+        self.assertFalse((config.WITHDRAWN_DIR / archive_name).exists())
+        self.assertEqual(purged["pseudonym"], "P01")
+        self.assertGreater(purged["files_deleted"], 0)
+        self.assertEqual(withdrawal.list_withdrawn(), [])
+
+        # Both events survive the data they describe.
+        with open(config.WITHDRAWAL_LOG_PATH, "r", encoding="utf-8", newline="") as fh:
+            rows = [row for row in csv.reader(fh) if row]
+        actions = [row[3] for row in rows[1:]]
+        self.assertEqual(actions, [withdrawal.WITHDRAWAL_ACTION, withdrawal.PURGE_ACTION])
+
+    def test_purge_needs_the_operator_utc(self) -> None:
+        summary = withdrawal.withdraw("P01", "2026-08-24T09:00:00+00:00")
+        archive_name = Path(str(summary["archived_to"])).name
+        with self.assertRaises(ValueError):
+            withdrawal.purge_withdrawn(archive_name, "")
+
+    def test_purge_cannot_escape_the_archive(self) -> None:
+        for name in ("../P01", "..\P01", "a/b", "../../data"):
+            with self.assertRaises(ValueError, msg=name):
+                withdrawal.purge_withdrawn(name, "2026-08-25T10:00:00+00:00")
+
+    def test_purging_something_that_is_not_there(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            withdrawal.purge_withdrawn("P99_20260101T000000", "2026-08-25T10:00:00+00:00")
+
+    def test_two_withdrawals_in_the_same_second_do_not_collide(self) -> None:
+        withdrawal.withdraw("P01", "2026-08-24T09:00:00+00:00")
+        participants.upsert_participant("P01", "Rejoined.")
+        self.write_session_on_disk("P01", "003_20260823T073000Z")
+        withdrawal.withdraw("P01", "2026-08-24T09:05:00+00:00")
+        pending = withdrawal.list_withdrawn()
+        self.assertEqual(len(pending), 2, "the second archive must not nest in the first")
+
+
+if __name__ == "__main__":
+    unittest.main()

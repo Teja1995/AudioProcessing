@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from capture.domain.models import Covariates, ReferenceMeasures
 from capture.domain.state import IllegalTransition
 from capture.domain.tasks import BY_NUMBER
-from capture.errors import PlaybackError, SessionFatalError
+from capture.errors import DeviceError, PlaybackError, SessionFatalError
 from capture.session_service import ActiveSession, service
 from capture.storage import consent_store, participants
 
@@ -44,6 +44,17 @@ router = APIRouter(prefix="/api/sessions", tags=["session"])
 # read as plain English at 3 a.m. Nothing is ever swallowed into a 200: an
 # exception either maps to a status code here, or reaches the unhandled-error
 # handler installed in capture.__main__ and becomes a readable 500.
+
+
+# A microphone problem found BEFORE recording starts is a precondition the
+# operator can fix, so it must not look like a server fault.
+_DEVICE_START_STATUS: dict[str, int] = {
+    "no_device_selected": 409,  # choose one on the start screen
+    "selected_device_missing": 409,  # plug it back in
+    "device_unsuitable": 400,  # this device cannot record the study format
+    "resampling_path": 409,  # reachable only through the mixer
+    "no_input_device": 409,  # nothing connected at all
+}
 
 
 @contextmanager
@@ -63,6 +74,17 @@ def http_errors() -> Iterator[None]:
         yield
     except IllegalTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DeviceError as exc:
+        # Something about the microphone is wrong and the operator can fix
+        # it: plug it back in, or choose a suitable one. That is a refusal to
+        # start, not a failure mid-recording, so it renders inline rather
+        # than behind the fatal overlay. Mapped BEFORE SessionFatalError,
+        # which DeviceError inherits from.
+        raise HTTPException(
+            status_code=_DEVICE_START_STATUS.get(exc.code, 409),
+            detail=exc.message,
+            headers={"X-Capture-Error-Code": exc.code},
+        ) from exc
     except PlaybackError as exc:
         # Recoverable: the take was aborted and the slot is idle again. A 409
         # renders inline and the UI re-syncs; a 500 here once blocked a whole

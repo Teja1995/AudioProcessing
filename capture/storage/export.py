@@ -171,7 +171,13 @@ def _walk_files(root: Path) -> dict[str, Path]:
     into a loop or drag in files from outside data/.
     """
     found: dict[str, Path] = {}
-    for dirpath, _dirnames, filenames in os.walk(root):
+    withdrawn = config.WITHDRAWN_DIR.name
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Withdrawn participants' data is out of the study and awaiting
+        # purge; it must never travel on the export. Pruning dirnames in
+        # place stops os.walk descending into it at all.
+        if Path(dirpath) == root and withdrawn in dirnames:
+            dirnames.remove(withdrawn)
         directory = Path(dirpath)
         for filename in filenames:
             path = directory / filename

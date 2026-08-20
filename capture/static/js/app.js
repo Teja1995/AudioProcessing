@@ -3323,6 +3323,7 @@ function startWithdraw(person) {
           );
           await loadWithdrawList();
           await loadAdherence();
+          await loadPurgeList();
           showInlineOk(
             `${person.pseudonym} withdrawn. ` +
               (result && result.files_deleted !== undefined
@@ -3379,6 +3380,174 @@ function showInlineOk(text) {
   const host = el("withdraw-list");
   if (!host) return;
   host.prepend(h("p", { class: "ok-note", text: text }));
+}
+
+
+// ---------------------------------------------------------------------------
+// Stage two: permanent erasure of an archived withdrawal.
+//
+// Withdrawal already removed the participant from the study. This destroys
+// the recordings, so it is deliberately harder to reach and asks for the
+// archive name to be typed. Under GDPR the erasure is not complete until
+// this runs, and the archive must not leave the habitat on the USB copy.
+// ---------------------------------------------------------------------------
+
+let purgeToken = 0;
+
+async function loadPurgeList() {
+  const host = el("purge-list");
+  if (!host) return;
+  const token = ++purgeToken;
+
+  let data;
+  try {
+    data = await api("GET", "/api/participants/withdrawn/archive");
+  } catch (err) {
+    if (token !== purgeToken) return;
+    clear(host);
+    host.append(h("p", { class: "error", text: `Cannot read the archive: ${err.message}` }));
+    return;
+  }
+  if (token !== purgeToken) return;
+
+  clear(host);
+  const rows = asArray(data.archived);
+  if (!rows.length) {
+    host.append(h("p", { class: "muted", text: "Nothing is awaiting erasure." }));
+    return;
+  }
+
+  for (const entry of rows) {
+    const mb = Number(entry.bytes) / (1024 * 1024);
+    host.append(
+      h(
+        "div",
+        { class: "withdraw-row" },
+        h(
+          "div",
+          {},
+          h("div", { class: "who-name", text: entry.pseudonym }),
+          h("div", {
+            class: "who-detail",
+            text:
+              `${entry.sessions} session(s), ${entry.files} file(s), ` +
+              `${mb.toFixed(1)} MB \u00b7 ${entry.archive}`,
+          })
+        ),
+        h(
+          "button",
+          {
+            class: "btn btn-danger-quiet",
+            type: "button",
+            onclick: function () {
+              startPurge(entry);
+            },
+          },
+          "Erase permanently"
+        )
+      )
+    );
+  }
+}
+
+function startPurge(entry) {
+  const host = el("purge-list");
+  if (!host) return;
+  clear(host);
+
+  const typed = h("input", { type: "text", autocomplete: "off", spellcheck: "false" });
+  const date = h("input", { type: "date", autocomplete: "off" });
+  const time = h("input", { type: "time", step: "60", autocomplete: "off" });
+  attachNativePicker(date);
+  attachNativePicker(time);
+  const status = h("p", { class: "hint", hidden: true });
+
+  const go = h(
+    "button",
+    {
+      class: "btn btn-danger",
+      type: "button",
+      onclick: async function () {
+        if (typed.value.trim() !== entry.archive) {
+          status.hidden = false;
+          status.className = "error";
+          status.textContent = `Nothing was erased. Type ${entry.archive} exactly to confirm.`;
+          return;
+        }
+        if (!date.value || !time.value) {
+          status.hidden = false;
+          status.className = "error";
+          status.textContent =
+            "Enter the current UTC time from the trusted source. The erasure " +
+            "record is stamped with it, not with this laptop's clock.";
+          return;
+        }
+        go.disabled = true;
+        status.hidden = false;
+        status.className = "hint";
+        status.textContent = "Erasing\u2026";
+        try {
+          const result = await api(
+            "POST",
+            `/api/participants/withdrawn/archive/${encodeURIComponent(entry.archive)}/purge`,
+            {
+              confirm_archive: typed.value.trim(),
+              utc_operator_entered: `${date.value}T${time.value}:00`,
+            }
+          );
+          await loadPurgeList();
+          const note = el("purge-list");
+          if (note) {
+            note.prepend(
+              h("p", {
+                class: "ok-note",
+                text:
+                  `${result.pseudonym} permanently erased: ` +
+                  `${result.files_deleted} file(s) deleted. The record that ` +
+                  "it happened is kept.",
+              })
+            );
+          }
+        } catch (err) {
+          go.disabled = false;
+          status.className = "error";
+          status.textContent = `Not erased: ${err.message}`;
+        }
+      },
+    },
+    "Erase permanently"
+  );
+
+  host.append(
+    h(
+      "div",
+      { class: "withdraw-confirm" },
+      h("p", {
+        class: "error",
+        text:
+          `This permanently destroys ${entry.files} file(s) of ` +
+          `${entry.pseudonym}'s recordings. There is no way back.`,
+      }),
+      h("label", { class: "stacked" }, `Type ${entry.archive} to confirm`, typed),
+      h(
+        "div",
+        { class: "utc-entry" },
+        h("label", {}, "Date (UTC)", date),
+        h("label", {}, "Time (UTC)", time)
+      ),
+      h("p", {
+        class: "hint",
+        text: "From the trusted watch or GPS, not this laptop.",
+      }),
+      h(
+        "div",
+        { class: "row-actions row-actions-left" },
+        go,
+        h("button", { class: "btn btn-quiet", type: "button", onclick: loadPurgeList }, "Cancel")
+      ),
+      status
+    )
+  );
 }
 
 function renderAdherence(data) {
@@ -3685,6 +3854,7 @@ function wireDashboard() {
     refresh.addEventListener("click", function () {
       loadAdherence();
       loadWithdrawList();
+      loadPurgeList();
     });
   const exportRun = el("export-run");
   if (exportRun) exportRun.addEventListener("click", runExport);
@@ -3692,6 +3862,7 @@ function wireDashboard() {
   // The capture screen's "Remove" sends the operator here for anyone who
   // already has recordings, so the control it names has to exist.
   loadWithdrawList();
+  loadPurgeList();
 }
 
 if (app.page === "dashboard") wireDashboard();

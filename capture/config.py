@@ -63,6 +63,12 @@ SELECTED_DEVICE_PATH: Final = DATA_DIR / "selected_input_device.json"
 # task 2's calibration tone into headphones nobody is wearing.
 SELECTED_OUTPUT_DEVICE_PATH: Final = DATA_DIR / "selected_output_device.json"
 WITHDRAWAL_LOG_PATH: Final = DATA_DIR / "withdrawals.csv"  # tombstones, §11
+# Withdrawn data is MOVED here, not deleted outright, so one misclick
+# cannot destroy a participant's whole week. Purging it is a separate,
+# deliberate action. Excluded from the USB export, the adherence grid
+# and the startup counts: it is no longer part of the study, only
+# pending permanent removal.
+WITHDRAWN_DIR: Final = DATA_DIR / "_withdrawn"
 PARTIAL_SUFFIX: Final = ".partial"  # in-progress takes; renamed on clean completion
 REFERENCE_TONE_WAV: Final = STATIC_DIR / "audio" / "reference_tone.wav"
 

@@ -320,6 +320,17 @@ def save_selection(index: int) -> InputDevice:
             f"{config.SAMPLE_RATE_HZ} Hz mono, which the study requires. "
             f"{match.capture_error}",
         )
+    # Apply the SAME rule the session start applies. Letting a device be
+    # chosen here and then refused at the first take would send the operator
+    # away and bring them back for nothing.
+    if match.host_api not in DIRECT_HOST_APIS:
+        raise DeviceError(
+            "resampling_path",
+            f"{match.name!r} on {match.host_api} goes through the Windows "
+            "mixer, which resamples. Choose the same microphone where it is "
+            "listed under WASAPI or WDM-KS — those reach the hardware "
+            "directly and are the only paths this study can record on.",
+        )
 
     config.SELECTED_DEVICE_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {"name": match.name, "host_api": match.host_api}
@@ -361,33 +372,24 @@ def resolve_capture_device(refresh: bool = False) -> DeviceInfo:
     devices = list_input_devices(refresh=refresh)
 
     if selected is None:
-        # No explicit choice: fall back to whatever Windows calls the default.
-        # That default is frequently an MME/DirectSound endpoint at 44.1 kHz,
-        # which resamples silently, so say so loudly rather than letting a
-        # whole session be recorded through it unnoticed.
-        from capture.audio.devices import describe_default_input
-
-        fallback = describe_default_input()
-        match = next((d for d in devices if d.index == fallback.index), None)
-        if match is None:
-            log.warning(
-                "No microphone selected; using the OS default %r, which could "
-                "not be probed. Choose a device on the start screen.",
-                fallback.name,
-            )
-        elif not match.recommended:
-            log.warning(
-                "No microphone selected, so the OS default %r (%s) is being "
-                "used and it is NOT suitable for this study:",
-                match.name,
-                match.host_api,
-            )
-            for warning in match.warnings:
-                log.warning("    %s", warning)
-            log.warning(
-                "    Choose a device on the start screen before recording."
-            )
-        return fallback
+        # No fallback. Windows' default on this machine is the Yeti on MME at
+        # 44.1 kHz, which resamples; using it would produce a session whose
+        # signal chain differs from every other session, with nothing in the
+        # audio to reveal that afterwards. Refusing costs one session; a
+        # silently resampled week costs the study.
+        offered = [d.name for d in devices if d.recommended]
+        raise DeviceError(
+            "no_device_selected",
+            "No microphone has been chosen, so recording will not start. "
+            "The Windows default is often a path that resamples, and a "
+            "session recorded through one cannot be compared with the rest. "
+            "Choose a microphone on the start screen. "
+            + (
+                f"Suitable devices right now: {', '.join(sorted(set(offered)))}."
+                if offered
+                else "No suitable device is connected at the moment."
+            ),
+        )
 
     matches = [
         d
@@ -412,8 +414,35 @@ def resolve_capture_device(refresh: bool = False) -> DeviceInfo:
             f"{device.name!r} can no longer record at "
             f"{config.SAMPLE_RATE_HZ} Hz mono. {device.capture_error}",
         )
-    for warning in device.warnings:
-        log.warning("Capture device warning: %s", warning)
+
+    # The host API is checked EVERY session, not just when it was chosen.
+    # A driver reload, a different USB port, or a Windows update can leave
+    # the same microphone reachable only through the mixer. Recording would
+    # still succeed and sound fine, while quietly resampling from that point
+    # on — a change in the data's character partway through the week that
+    # nothing in the files would reveal.
+    if device.host_api not in DIRECT_HOST_APIS:
+        raise DeviceError(
+            "resampling_path",
+            f"{device.name!r} is only reachable through {device.host_api}, "
+            "which goes via the Windows mixer and resamples. Recording will "
+            "NOT start: a session captured this way would differ from the "
+            "others in a way nothing in the audio would show afterwards. "
+            "Re-select the microphone on the start screen — the same device "
+            "is usually also listed under WASAPI or WDM-KS — or reconnect it "
+            "to the USB port it was set up on.",
+        )
+
+    # Anything else the device warns about is still a refusal, not a note:
+    # a warned device is one the study should not be recorded on.
+    if device.warnings:
+        raise DeviceError(
+            "device_unsuitable",
+            f"{device.name!r} ({device.host_api}) is not suitable for "
+            "recording: "
+            + " ".join(device.warnings)
+            + " Choose a different microphone on the start screen.",
+        )
 
     return DeviceInfo(
         index=device.index,

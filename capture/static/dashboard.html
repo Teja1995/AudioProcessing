@@ -44,12 +44,26 @@
          mistyped pseudonym on the capture screen. -->
     <div class="card">
       <h3>Withdraw a participant</h3>
-      <p class="muted">Deletes <strong>all</strong> of that person's recordings,
-        metadata, consent record and log rows. A tombstone is kept recording
-        that the withdrawal happened, because the fact must outlive the data.
-        This cannot be undone.</p>
+      <p class="muted">Takes the participant out of the study immediately:
+        their log rows and registry entry go, the adherence grid forgets them,
+        and the USB export stops carrying them. Their recordings are
+        <strong>moved to the archive below</strong> rather than destroyed, so
+        a misclick cannot lose someone's week. A tombstone records that the
+        withdrawal happened, because the fact must outlive the data.</p>
       <div id="withdraw-list" class="withdraw-list">Loading…</div>
       <p id="withdraw-error" class="error" hidden></p>
+    </div>
+
+    <!-- Stage two. Withdrawal takes someone out of the study; this destroys
+         the recordings. Separate on purpose: the first is urgent and should
+         be easy, the second is final and must not be a misclick. -->
+    <div class="card">
+      <h3>Withdrawn — awaiting permanent erasure</h3>
+      <p class="muted">Withdrawn data is moved here, out of the study: it is
+        excluded from the adherence grid and never travels on the USB export.
+        It is still personal data until purged, so purge before the dataset
+        leaves the habitat.</p>
+      <div id="purge-list" class="withdraw-list">Loading…</div>
     </div>
 
     <div class="card">

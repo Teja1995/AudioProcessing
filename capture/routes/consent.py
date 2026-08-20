@@ -251,3 +251,42 @@ async def delete_participant(pid: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=f"No participant {pseudonym}")
     log.info("Participant %s removed from the register (no recordings)", pseudonym)
     return {"removed": pseudonym, "consent_removed": consent_removed}
+
+
+class PurgeRequest(BaseModel):
+    """Permanent erasure of one archived withdrawal.
+
+    Deliberately separate from withdrawal: taking someone out of the study is
+    urgent and should be easy, while destroying the recordings is final and
+    must not be reachable by a misclick.
+    """
+
+    confirm_archive: str
+    utc_operator_entered: str
+
+
+@router.get("/withdrawn/archive")
+async def list_withdrawn_archive() -> dict[str, object]:
+    """Withdrawn participants whose data is archived, awaiting purge."""
+    with http_errors():
+        return {"archived": withdrawal.list_withdrawn()}
+
+
+@router.post("/withdrawn/archive/{archive_name}/purge")
+async def purge_archive(archive_name: str, body: PurgeRequest) -> dict[str, object]:
+    """Erase one archived withdrawal permanently. This cannot be undone."""
+    if body.confirm_archive.strip() != archive_name:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Nothing was deleted. To purge {archive_name}, type that "
+                f"name exactly to confirm (got {body.confirm_archive.strip()!r})."
+            ),
+        )
+    with http_errors():
+        entered = clock.parse_operator_utc(body.utc_operator_entered)
+        summary = await asyncio.to_thread(
+            withdrawal.purge_withdrawn, archive_name, entered.isoformat()
+        )
+    log.warning("PURGE: %s permanently erased", archive_name)
+    return summary
